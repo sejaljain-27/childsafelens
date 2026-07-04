@@ -1,0 +1,32 @@
+navigation/RootNavigator.tsx(7,15): error TS2614: Module '"../App"' has no exported member 'RootStackParamList'. Did you mean to use 'import RootStackParamList from "../App"' instead?
+navigation/RootNavigator.tsx(7,41): error TS1149: File name 'D:/react-native/my-app/App/index.tsx' differs from already included file name 'D:/react-native/my-app/app/index.tsx' only in casing.
+  The file is in the program because:
+    Matched by include pattern '**/*.tsx' in 'D:/react-native/my-app/tsconfig.json'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/LoginScreen.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/DashboardScreen.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/navigation/RootNavigator.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/SignupScreen.tsx'
+screens/DashboardScreen.tsx(25,15): error TS2614: Module '"../App"' has no exported member 'RootStackParamList'. Did you mean to use 'import RootStackParamList from "../App"' instead?
+screens/DashboardScreen.tsx(25,41): error TS1149: File name 'D:/react-native/my-app/App/index.tsx' differs from already included file name 'D:/react-native/my-app/app/index.tsx' only in casing.
+  The file is in the program because:
+    Matched by include pattern '**/*.tsx' in 'D:/react-native/my-app/tsconfig.json'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/LoginScreen.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/DashboardScreen.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/navigation/RootNavigator.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/SignupScreen.tsx'
+screens/LoginScreen.tsx(17,15): error TS2614: Module '"../App"' has no exported member 'RootStackParamList'. Did you mean to use 'import RootStackParamList from "../App"' instead?
+screens/LoginScreen.tsx(17,41): error TS1149: File name 'D:/react-native/my-app/App/index.tsx' differs from already included file name 'D:/react-native/my-app/app/index.tsx' only in casing.
+  The file is in the program because:
+    Matched by include pattern '**/*.tsx' in 'D:/react-native/my-app/tsconfig.json'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/LoginScreen.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/DashboardScreen.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/navigation/RootNavigator.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/SignupScreen.tsx'
+screens/SignupScreen.tsx(16,15): error TS2614: Module '"../App"' has no exported member 'RootStackParamList'. Did you mean to use 'import RootStackParamList from "../App"' instead?
+screens/SignupScreen.tsx(16,41): error TS1149: File name 'D:/react-native/my-app/App/index.tsx' differs from already included file name 'D:/react-native/my-app/app/index.tsx' only in casing.
+  The file is in the program because:
+    Matched by include pattern '**/*.tsx' in 'D:/react-native/my-app/tsconfig.json'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/LoginScreen.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/DashboardScreen.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/navigation/RootNavigator.tsx'
+    Imported via '../App' from file 'D:/react-native/my-app/screens/SignupScreen.tsx'
