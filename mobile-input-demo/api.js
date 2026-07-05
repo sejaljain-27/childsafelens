@@ -6,7 +6,7 @@
 // instead of localhost — e.g. "http://192.168.1.23:8000" — because
 // "localhost" on a phone points to the phone itself, not your laptop.
 
-export const API_BASE_URL = "https://REPLACE-WITH-YOUR-DEPLOYED-URL.onrender.com";
+export const API_BASE_URL = "https://childsafelens.onrender.com";
 
 export async function predict(text) {
   const res = await fetch(`${API_BASE_URL}/predict`, {
