@@ -1,0 +1,9 @@
+{
+  "maxlen": 60,
+  "vocab_size": 18983,
+  "embed_dim": 100,
+  "label_mapping": {
+    "1": "bullying (-1)",
+    "0": "non-bullying (0)"
+  }
+}
