@@ -1,0 +1,8 @@
+<resources>
+    <color name="primary">#2E74B5</color>
+    <color name="primary_dark">#1F4E79</color>
+    <color name="overlay_bg">#DD1F2937</color>
+    <color name="white">#FFFFFF</color>
+    <color name="text_dark">#1F2937</color>
+    <color name="thread_bg">#F3F4F6</color>
+</resources>
