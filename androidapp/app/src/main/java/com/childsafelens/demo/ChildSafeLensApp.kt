@@ -15,5 +15,8 @@ class ChildSafeLensApp : Application() {
 
         // Initialize the on-device ML inference engine
         Inference.init(this)
+
+        // Initialize the word masker engine
+        Masker.init(this)
     }
 }

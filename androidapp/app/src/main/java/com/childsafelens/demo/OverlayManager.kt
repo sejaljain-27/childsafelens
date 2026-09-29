@@ -15,11 +15,6 @@ import android.widget.Button
  * Draws and removes the full-screen "nudge" overlay window on top of
  * whatever the child is looking at. This is what physically prevents the
  * child from reaching the Send button underneath while it's showing.
- *
- * Deliberately has NO FLAG_NOT_TOUCH_MODAL — that flag would let touches
- * pass through to the app below around/outside the overlay's own views.
- * Since our overlay is full-screen and modal by default, all touches are
- * consumed by the overlay until the user taps Edit or Send Anyway.
  */
 class OverlayManager(private val context: Context) {
 
@@ -29,8 +24,7 @@ class OverlayManager(private val context: Context) {
     val isShowing: Boolean
         get() = overlayView != null
 
-    fun show(onEdit: () -> Unit, onSendAnyway: () -> Unit) {
-        // Log permission status to help debugging
+    fun show(onEdit: () -> Unit, onMaskAndSend: () -> Unit, onSendAnyway: () -> Unit) {
         val canDraw = Settings.canDrawOverlays(context)
         Log.d("OverlayManager", "Attempting show. Permission granted: $canDraw")
 
@@ -39,9 +33,6 @@ class OverlayManager(private val context: Context) {
             return
         }
 
-        // Guard against stacking multiple overlay windows if this gets
-        // called again while one is already showing (e.g. fast typing
-        // before debounce fully settles).
         if (overlayView != null) {
             Log.d("OverlayManager", "Overlay already showing, ignoring request.")
             return
@@ -62,6 +53,10 @@ class OverlayManager(private val context: Context) {
             view.findViewById<Button>(R.id.editBtn).setOnClickListener {
                 hide()
                 onEdit()
+            }
+            view.findViewById<Button>(R.id.maskAndSendBtn).setOnClickListener {
+                hide()
+                onMaskAndSend()
             }
             view.findViewById<Button>(R.id.sendAnywayBtn).setOnClickListener {
                 hide()

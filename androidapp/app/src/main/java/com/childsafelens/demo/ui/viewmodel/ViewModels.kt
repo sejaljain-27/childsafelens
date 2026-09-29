@@ -8,6 +8,7 @@ import androidx.lifecycle.asLiveData
 import androidx.lifecycle.viewModelScope
 import com.childsafelens.demo.EventLogger
 import com.childsafelens.demo.Inference
+import com.childsafelens.demo.Masker
 import com.childsafelens.demo.NudgeAccessibilityService
 import com.childsafelens.demo.data.db.AppDatabase
 import com.childsafelens.demo.data.model.ChildProfile
@@ -253,12 +254,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun applySafeSendFilter(text: String): String {
-        var filtered = text
-        for (term in flaggedTerms) {
-            val simpleRegex = "(?i)$term".toRegex()
-            filtered = filtered.replace(simpleRegex, "****")
-        }
-        return filtered
+        Masker.ensureInitialized(getApplication())
+        return Masker.mask(text)
     }
 
     private fun triggerParentAlert() {
@@ -374,11 +371,8 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun applySafeSendFilter(text: String): String {
-        var filtered = text
-        for (term in flaggedTerms) {
-            filtered = filtered.replace("(?i)$term".toRegex(), "****")
-        }
-        return filtered
+        Masker.ensureInitialized(getApplication())
+        return Masker.mask(text)
     }
 
     private fun triggerOverlay() {

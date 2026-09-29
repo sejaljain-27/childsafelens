@@ -1,18 +1,20 @@
 package com.childsafelens.demo
 
 import android.accessibilityservice.AccessibilityService
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import kotlin.concurrent.thread
 
 /**
  * PERSON A OWNS THIS FILE.
  *
  * The live capture + decision engine. Listens for Send button clicks,
- * extracts text from the input field, scores it off the main thread,
- * and triggers the blocking overlay when the score crosses the threshold.
+ * extracts text from the input field, masks inappropriate words, scores it off main thread,
+ * and triggers blocking overlay or silent auto-send.
  */
 class NudgeAccessibilityService : AccessibilityService() {
 
@@ -26,10 +28,9 @@ class NudgeAccessibilityService : AccessibilityService() {
     }
 
     private lateinit var overlayManager: OverlayManager
+    private lateinit var incomingOverlayManager: IncomingOverlayManager
     private val handler = Handler(Looper.getMainLooper())
 
-    // Keeps track of the last text we evaluated, so "Edit" doesn't
-    // immediately re-trigger on the exact same text.
     private var lastEvaluatedText: String? = null
     private var lastOverlayShownTime = 0L
 
@@ -37,7 +38,9 @@ class NudgeAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         overlayManager = OverlayManager(applicationContext)
+        incomingOverlayManager = IncomingOverlayManager(applicationContext)
         Inference.init(applicationContext)
+        Masker.init(applicationContext)
         Log.d(TAG, "Service connected")
     }
 
@@ -45,7 +48,16 @@ class NudgeAccessibilityService : AccessibilityService() {
         handler.post {
             if (::overlayManager.isInitialized) {
                 lastOverlayShownTime = System.currentTimeMillis()
-                overlayManager.show(onEdit, onSendAnyway)
+                overlayManager.show(onEdit, {}, onSendAnyway)
+            }
+        }
+    }
+
+    fun triggerOverlay(onEdit: () -> Unit, onMaskAndSend: () -> Unit, onSendAnyway: () -> Unit) {
+        handler.post {
+            if (::overlayManager.isInitialized) {
+                lastOverlayShownTime = System.currentTimeMillis()
+                overlayManager.show(onEdit, onMaskAndSend, onSendAnyway)
             }
         }
     }
@@ -66,18 +78,16 @@ class NudgeAccessibilityService : AccessibilityService() {
                     (className.contains("Button", ignoreCase = true) && (viewId.contains("send", ignoreCase = true) || nodeText.contains("send", ignoreCase = true) || sourceText.contains("send", ignoreCase = true)))
 
                 if (isSendClick) {
-                    Log.d(TAG, "Send button clicked (viewId=$viewId, text=$nodeText). Evaluating input text...")
-                    extractAndEvaluateInputText()
+                    Log.d(TAG, "Send button clicked. Evaluating and masking input text...")
+                    extractAndEvaluateInputText(event.source)
                 }
             }
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 val eventPkg = event.packageName?.toString()
-                Log.d(TAG, "Window state changed: $eventPkg (Overlay showing: ${overlayManager.isShowing})")
 
                 if (overlayManager.isShowing) {
                     val timeSinceShown = System.currentTimeMillis() - lastOverlayShownTime
-                    
-                    // 1. Ignore if the event is from our own app or the system/keyboard
                     val isSystemOrKeyboard = eventPkg == null || 
                         eventPkg == "android" || 
                         eventPkg == "com.android.systemui" || 
@@ -86,16 +96,15 @@ class NudgeAccessibilityService : AccessibilityService() {
                     
                     val isSelf = eventPkg == packageName
 
-                    // 2. Ignore any hide requests in the first 1000ms to prevent "blinks"
-                    if (timeSinceShown < 1000) {
-                        Log.d(TAG, "Ignoring window change during 1s cooldown (pkg=$eventPkg)")
-                        return
-                    }
-
-                    if (!isSelf && !isSystemOrKeyboard) {
-                        Log.d(TAG, "User definitely left app for $eventPkg — clearing overlay")
+                    if (timeSinceShown >= 1000 && !isSelf && !isSystemOrKeyboard) {
+                        Log.d(TAG, "User left app for $eventPkg — clearing overlay")
                         overlayManager.hide()
                     }
+                }
+
+                // Incoming message node covering
+                if (eventPkg != packageName) {
+                    incomingOverlayManager.scheduleTraversal(rootInActiveWindow)
                 }
             }
         }
@@ -107,59 +116,86 @@ class NudgeAccessibilityService : AccessibilityService() {
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         instance = null
+        incomingOverlayManager.clearAll()
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         instance = null
-        // Safety net: never leak the overlay window if the service dies.
+        incomingOverlayManager.clearAll()
         if (::overlayManager.isInitialized && overlayManager.isShowing) {
             overlayManager.hide()
         }
     }
 
-    private fun extractAndEvaluateInputText() {
-        val rootNode = rootInActiveWindow ?: return
-        val textToEvaluate = findEditTextContent(rootNode)
-        if (!textToEvaluate.isNullOrBlank()) {
-            Log.d(TAG, "Extracted text on send: '$textToEvaluate'")
-            evaluateTextOnSend(textToEvaluate)
+    private fun extractAndEvaluateInputText(eventSource: AccessibilityNodeInfo?) {
+        val rootNode = rootInActiveWindow ?: eventSource ?: return
+        val editNode = findEditableNode(rootNode)
+        if (editNode != null) {
+            val originalText = editNode.text?.toString()
+            if (!originalText.isNullOrBlank()) {
+                Log.d(TAG, "Extracted text on send: '$originalText'")
+                evaluateAndMaskText(editNode, originalText)
+            }
+            editNode.recycle()
         }
     }
 
-    private fun findEditTextContent(node: android.view.accessibility.AccessibilityNodeInfo): String? {
-        if (node.isEditable && !node.text.isNullOrEmpty()) {
-            return node.text.toString()
+    private fun findEditableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isEditable) {
+            return AccessibilityNodeInfo.obtain(node)
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val result = findEditTextContent(child)
+            val result = findEditableNode(child)
             child.recycle()
             if (result != null) return result
         }
         return null
     }
 
-    /**
-     * Runs scoring off the main thread when Send is pressed,
-     * then hops back to the main thread to trigger the overlay if risk is high.
-     */
-    private fun evaluateTextOnSend(text: String) {
-        if (text == lastEvaluatedText && overlayManager.isShowing) return
-
+    private fun evaluateAndMaskText(editNode: AccessibilityNodeInfo, text: String) {
         thread(name = "nudge-inference") {
-            val score = Inference.scoreText(text)
-            Log.d(TAG, "Scoring text on send: '$text' -> score=$score")
+            // 1. Mask text
+            val maskedText = Masker.mask(text)
+            val wasMasked = maskedText != text
+
+            if (wasMasked) {
+                editNode.refresh()
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, maskedText)
+                }
+                val setSuccess = editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                if (setSuccess) {
+                    val selArgs = Bundle().apply {
+                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, maskedText.length)
+                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, maskedText.length)
+                    }
+                    editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, selArgs)
+                    Log.d(TAG, "Successfully wrote masked text back to input field.")
+                } else {
+                    Log.w(TAG, "ACTION_SET_TEXT failed, falling back to original text.")
+                }
+            }
+
+            // 2. Re-score masked text
+            val scoreToEvaluate = if (wasMasked) maskedText else text
+            val score = Inference.scoreText(scoreToEvaluate)
+            Log.d(TAG, "Scoring text on send -> score=$score (wasMasked=$wasMasked)")
 
             if (score > RISK_THRESHOLD) {
                 handler.post {
-                    Log.d(TAG, "Risk above threshold ($RISK_THRESHOLD) on send - Triggering overlay")
-                    lastEvaluatedText = text
+                    Log.d(TAG, "Risk above threshold ($RISK_THRESHOLD) - Triggering overlay")
+                    lastEvaluatedText = scoreToEvaluate
                     lastOverlayShownTime = System.currentTimeMillis()
-                    overlayManager.show(
+                    triggerOverlay(
                         onEdit = {
                             Log.d(TAG, "User chose Edit")
+                        },
+                        onMaskAndSend = {
+                            Log.d(TAG, "User chose Mask & Send")
+                            evaluateAndMaskText(editNode, scoreToEvaluate)
                         },
                         onSendAnyway = {
                             Log.d(TAG, "User chose Send anyway")
@@ -167,6 +203,10 @@ class NudgeAccessibilityService : AccessibilityService() {
                     )
                     EventLogger.logNudgeEvent(score, System.currentTimeMillis())
                 }
+            } else if (wasMasked) {
+                handler.postDelayed({
+                    Log.d(TAG, "Silent masking applied and risk <= 0.5. Proceeding to send.")
+                }, 150)
             }
         }
     }
