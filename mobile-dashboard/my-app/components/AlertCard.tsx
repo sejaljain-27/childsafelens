@@ -11,6 +11,7 @@ interface AlertCardProps {
 const AlertCard: React.FC<AlertCardProps> = ({ alert, onDecision }) => {
   const isHigh = alert.riskLevel === 'HIGH' || alert.riskLevel === 'CRITICAL';
   const isPending = alert.status === 'PENDING' || alert.status === 'PENDING_PARENT_REVIEW' || alert.status === 'EDIT_REQUIRED';
+  const isIncoming = alert.type?.toUpperCase() === 'INCOMING';
 
   return (
     <View style={[styles.card, isHigh && styles.highRiskCard]}>
@@ -22,7 +23,7 @@ const AlertCard: React.FC<AlertCardProps> = ({ alert, onDecision }) => {
             color={isHigh ? '#F43F5E' : '#FBBF24'}
           />
           <Text style={[styles.badgeText, { color: isHigh ? '#F43F5E' : '#FBBF24' }]}>
-            {alert.riskLevel} Risk ({alert.category})
+            {alert.riskLevel} Risk ({alert.category}) [{isIncoming ? 'Incoming' : 'Outgoing'}]
           </Text>
         </View>
         <Text style={styles.time}>{new Date(alert.timestamp).toLocaleTimeString()}</Text>
@@ -34,15 +35,28 @@ const AlertCard: React.FC<AlertCardProps> = ({ alert, onDecision }) => {
 
       {isPending && (
         <View style={styles.actions}>
-          <TouchableOpacity style={[styles.btn, styles.allowBtn]} onPress={() => onDecision(alert.incidentId, 'ALLOW')}>
-            <Text style={styles.btnText}>Allow Send</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.btn, styles.editBtn]} onPress={() => onDecision(alert.incidentId, 'EDIT')}>
-            <Text style={styles.btnText}>Ask Child to Edit</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.btn, styles.blockBtn]} onPress={() => onDecision(alert.incidentId, 'BLOCK')}>
-            <Text style={styles.btnText}>Block Send</Text>
-          </TouchableOpacity>
+          {isIncoming ? (
+            <>
+              <TouchableOpacity style={[styles.btn, styles.allowBtn]} onPress={() => onDecision(alert.incidentId, 'ALLOW')}>
+                <Text style={styles.btnText}>View</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.btn, styles.blockBtn]} onPress={() => onDecision(alert.incidentId, 'BLOCK')}>
+                <Text style={styles.btnText}>Block</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <TouchableOpacity style={[styles.btn, styles.allowBtn]} onPress={() => onDecision(alert.incidentId, 'ALLOW')}>
+                <Text style={styles.btnText}>Allow Send</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.btn, styles.editBtn]} onPress={() => onDecision(alert.incidentId, 'EDIT')}>
+                <Text style={styles.btnText}>Ask Child to Edit</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.btn, styles.blockBtn]} onPress={() => onDecision(alert.incidentId, 'BLOCK')}>
+                <Text style={styles.btnText}>Block Send</Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       )}
     </View>
@@ -78,7 +92,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   badgeText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     textTransform: 'uppercase',
   },

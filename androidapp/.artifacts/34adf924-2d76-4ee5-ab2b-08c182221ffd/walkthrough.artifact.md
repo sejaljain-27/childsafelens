@@ -1,19 +1,27 @@
-# Walkthrough - Parent Account & Child Profile Mapping
+# Walkthrough - Standalone Messaging App Features (BLOCK, EDIT, Incoming View/Block, Mapped Parent/Child Sessions)
 
-Successfully mapped the Android Child App and React Native Parent Dashboard using **Parent Email** and **Child Name** so that safety incidents and alerts are correctly associated and filtered per family/child.
+Successfully implemented all requested architecture and UI features for the ChildSafeLens demo app.
 
-## Changes
+## Summary of Accomplishments
 
-### 1. Backend (`backend/main.py`)
-- Updated `IncidentCreate` schema to include `parentEmail` and `childName`.
-- Updated `GET /incidents` and `GET /events` to support query parameters `parentEmail` and `childName` for filtering.
+### 1. Parent Account & Child Profile Mapping
+- Mapped Android child app sessions and React Native parent dashboard using `parentEmail` and `childName`.
+- Backend endpoints (`/incidents`, `/events`) support query parameters for filtering by parent email and child name.
 
-### 2. Android Child App (`IncidentManager.kt`, `IncidentEntity.kt`)
-- Updated `IncidentEntity` and `IncidentManager` to automatically fetch the active parent email and active child profile name from `SessionManager` and include them in incident payloads sent to the backend.
+### 2. Standalone Messaging App BLOCK & EDIT Workflows
+- **Atomic State Transitions**: Guaranteed race-condition protection for parent decisions (`PENDING_PARENT_REVIEW` → `ALLOWED` / `BLOCKED` / `EDIT_REQUIRED`).
+- **Audit History**: Preserved `originalContent` vs `editedContent` for audit history.
+- **Child Waiting Overlay**: Implemented a non-dismissible loading dialog overlay (`⏳ Waiting for parent approval...`) freezing the child screen while awaiting parent response.
 
-### 3. React Native Parent Dashboard (`alertsService.ts`, `app/dashboard.tsx`)
-- Updated `fetchAlerts` and `fetchDashboardStats` to accept `parentEmail` and `childName` and pass them as query parameters (`?parentEmail=...&childName=...`) to filter incidents displayed on the parent dashboard.
+### 3. Incoming Message Controls (View / Block)
+- **Incoming vs Outgoing separation**: Outgoing messages retain Allow, Edit, and Block controls, while **Incoming messages** display dedicated **[ View ]** and **[ Block ]** buttons.
+- **Incoming Block Enforcement**: When a parent clicks **Block** on an incoming message, the message received by the child is hidden / replaced with `[Message Hidden by Parent]`, ensuring no inappropriate content is seen.
 
-## Verification Results
-- Build successful (`BUILD SUCCESSFUL` with `./gradlew assembleDebug`).
-- Mapped connection established between child app sessions and parent dashboard views.
+### 4. Parent Dashboard Refinements
+- **Logout Option**: Added a dedicated logout button in the dashboard header.
+- **Risk Level Filtering**: Filtered alerts to display **only High and Critical risk** incidents.
+- **Parent Settings**: Configured default timeout policies and duration via `/settings`.
+
+## Verification
+- Build successful (`BUILD SUCCESSFUL`).
+- Fully tested and verified on physical device (`RZCX2267KBR`) and React Native web dashboard (`http://localhost:8081`).
