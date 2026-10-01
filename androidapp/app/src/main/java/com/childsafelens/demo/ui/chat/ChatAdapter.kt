@@ -59,30 +59,36 @@ class ChatAdapter(
         } else if (holder is LeftViewHolder) {
             holder.tvTime.text = timeStr
             
-            val isRisky = message.riskLevel == RiskLevel.MODERATE || message.riskLevel == RiskLevel.HIGH
-            
-            if (isRisky && !message.isRevealed) {
-                holder.layoutMaskedWarning.visibility = View.VISIBLE
-                holder.tvMessage.visibility = View.GONE
-                
-                holder.btnView.setOnClickListener {
-                    if (viewModel != null) {
-                        viewModel.revealMessage(message.id)
-                    } else if (simulatorViewModel != null) {
-                        simulatorViewModel.revealMessage(message.id)
-                    }
-                }
-                holder.btnIgnore.setOnClickListener {
-                    if (viewModel != null) {
-                        viewModel.ignoreMessage(message.id)
-                    } else if (simulatorViewModel != null) {
-                        simulatorViewModel.ignoreMessage(message.id)
-                    }
-                }
-            } else {
+            if (message.isBlockedByParent) {
                 holder.layoutMaskedWarning.visibility = View.GONE
                 holder.tvMessage.visibility = View.VISIBLE
-                holder.tvMessage.text = message.displayText
+                holder.tvMessage.text = "⚠️ You can't view this message"
+            } else {
+                val isRisky = message.riskLevel == RiskLevel.MODERATE || message.riskLevel == RiskLevel.HIGH
+                
+                if (isRisky && !message.isRevealed) {
+                    holder.layoutMaskedWarning.visibility = View.VISIBLE
+                    holder.tvMessage.visibility = View.GONE
+                    
+                    holder.btnView.setOnClickListener {
+                        if (viewModel != null) {
+                            viewModel.revealMessage(message.id)
+                        } else if (simulatorViewModel != null) {
+                            simulatorViewModel.revealMessage(message.id)
+                        }
+                    }
+                    holder.btnIgnore.setOnClickListener {
+                        if (viewModel != null) {
+                            viewModel.ignoreMessage(message.id)
+                        } else if (simulatorViewModel != null) {
+                            simulatorViewModel.ignoreMessage(message.id)
+                        }
+                    }
+                } else {
+                    holder.layoutMaskedWarning.visibility = View.GONE
+                    holder.tvMessage.visibility = View.VISIBLE
+                    holder.tvMessage.text = message.displayText
+                }
             }
         }
     }

@@ -8,7 +8,8 @@ data class Message(
     val riskLevel: RiskLevel = RiskLevel.PENDING,
     var displayText: String = text,
     var isRevealed: Boolean = false,
-    var visibleToReceiver: Boolean = true
+    var visibleToReceiver: Boolean = true,
+    var isBlockedByParent: Boolean = false
 )
 
 enum class Sender {
