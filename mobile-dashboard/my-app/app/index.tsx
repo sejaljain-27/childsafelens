@@ -10,7 +10,6 @@ import {
   Platform,
   Alert,
   Dimensions,
-  Button,
 } from 'react-native';
 
 import { HeroSection } from '../components/ui/hero-section-with-smooth-bg-shader';
@@ -24,7 +23,6 @@ const LoginScreen: React.FC = () => {
   const [fullName, setFullName] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [agreedToTerms, setAgreedToTerms] = useState(false);
 
   const handleAuth = () => {
     console.log('Login button pressed. isSignup:', isSignup);
@@ -47,9 +45,17 @@ const LoginScreen: React.FC = () => {
         if (isSignup) {
           console.log('Signup successful, switching to Login mode');
           setIsSignup(false);
+          Alert.alert('Success', 'Account created successfully! Please sign in.');
         } else {
-          console.log('Login successful, navigating to dashboard...');
-          router.replace('/dashboard');
+          console.log('Login successful, navigating to dashboard for:', email);
+          const cleanEmail = email.trim().toLowerCase() || 'parent@test.com';
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('childsafelens_parent_email', cleanEmail);
+          }
+          router.replace({
+            pathname: '/dashboard',
+            params: { email: cleanEmail }
+          });
         }
       }, 500);
     } catch (error) {
@@ -58,7 +64,6 @@ const LoginScreen: React.FC = () => {
       Alert.alert('Error', String(error));
     }
   };
-
 
   const toggleMode = () => {
     setIsSignup(!isSignup);
@@ -204,7 +209,13 @@ const LoginScreen: React.FC = () => {
           <TouchableOpacity 
             activeOpacity={0.7}
             style={styles.demoButton}
-            onPress={() => router.replace('/dashboard')}
+            onPress={() => {
+              const cleanEmail = 'parent@test.com';
+              if (typeof window !== 'undefined') {
+                localStorage.setItem('childsafelens_parent_email', cleanEmail);
+              }
+              router.replace({ pathname: '/dashboard', params: { email: cleanEmail } });
+            }}
           >
             <Text style={styles.demoButtonText}>Skip to Dashboard →</Text>
           </TouchableOpacity>
@@ -214,9 +225,7 @@ const LoginScreen: React.FC = () => {
   );
 };
 
-
 const { width } = Dimensions.get('window');
-
 const boxWidth = Math.min(width - 80, 800);
 
 const styles = StyleSheet.create({
@@ -235,7 +244,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.2)',
     overflow: 'hidden',
     paddingBottom: 48,
-    boxShadow: '0px 20px 40px rgba(0, 0, 0, 0.2)', // Web-compatible shadow
+    boxShadow: '0px 20px 40px rgba(0, 0, 0, 0.2)',
     elevation: 10,
     backdropFilter: 'blur(16px)',
   } as any,
@@ -262,7 +271,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 40,
     marginTop: 20,
-    boxShadow: '0px 6px 12px rgba(0, 0, 0, 0.2)', // Web-compatible shadow
+    boxShadow: '0px 6px 12px rgba(0, 0, 0, 0.2)',
     elevation: 8,
   } as any,
   authButtonDisabled: { opacity: 0.7 },
@@ -273,6 +282,5 @@ const styles = StyleSheet.create({
   demoButton: { marginTop: 64, paddingVertical: 32, paddingHorizontal: 64, borderWidth: 4, borderColor: 'rgba(15, 23, 42, 0.3)', borderRadius: 32, alignItems: 'center', backgroundColor: 'rgba(255, 255, 255, 0.1)' },
   demoButtonText: { color: '#0F172A', fontSize: 40, fontWeight: '700' },
 });
-
 
 export default LoginScreen;

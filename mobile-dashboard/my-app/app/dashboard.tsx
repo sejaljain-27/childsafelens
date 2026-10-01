@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import AlertCard from '../components/AlertCard';
@@ -19,7 +19,18 @@ import { fetchAlerts, fetchDashboardStats, submitDecision, type IncidentType, ty
 
 const DashboardScreen: React.FC = () => {
   const router = useRouter();
-  const [parentEmail, setParentEmail] = useState<string>('parent@test.com');
+  const params = useLocalSearchParams();
+
+  const getStoredEmail = () => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('childsafelens_parent_email');
+    }
+    return null;
+  };
+
+  const [parentEmail, setParentEmail] = useState<string>(
+    (params.email as string) || getStoredEmail() || 'parent@test.com'
+  );
   const [selectedChild, setSelectedChild] = useState<'Aarav' | 'Kiara'>('Aarav');
   const [stats, setStats] = useState<DashboardStats>({
     total_events: 0,
@@ -43,8 +54,8 @@ const DashboardScreen: React.FC = () => {
     // Filter for High and Critical risk only
     const highCritical = allIncidents.filter(i => i.riskLevel === 'HIGH' || i.riskLevel === 'CRITICAL');
 
-    setOutgoingIncidents(highCritical.filter(i => i.type === 'OUTGOING'));
-    setIncomingIncidents(highCritical.filter(i => i.type === 'INCOMING'));
+    setOutgoingIncidents(highCritical.filter(i => i.type?.toUpperCase() === 'OUTGOING'));
+    setIncomingIncidents(highCritical.filter(i => i.type?.toUpperCase() === 'INCOMING'));
     setRefreshing(false);
   };
 
@@ -60,6 +71,9 @@ const DashboardScreen: React.FC = () => {
   };
 
   const handleLogout = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('childsafelens_parent_email');
+    }
     router.replace('/');
   };
 
