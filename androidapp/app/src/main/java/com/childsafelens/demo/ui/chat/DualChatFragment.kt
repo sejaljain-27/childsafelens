@@ -15,6 +15,7 @@ import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.childsafelens.demo.R
+import com.childsafelens.demo.data.model.Sender
 import com.childsafelens.demo.ui.viewmodel.SimulatorViewModel
 
 class DualChatFragment : Fragment() {
@@ -63,8 +64,10 @@ class DualChatFragment : Fragment() {
             adapterChild.submitList(list) {
                 if (list.isNotEmpty()) rvChild.scrollToPosition(list.size - 1)
             }
-            adapterContact.submitList(list) {
-                if (list.isNotEmpty()) rvContact.scrollToPosition(list.size - 1)
+            // Stealth blocking: receiver perspective only sees messages where visibleToReceiver is true
+            val visibleToList = list.filter { it.visibleToReceiver || it.sender == Sender.SIMULATED_CONTACT }
+            adapterContact.submitList(visibleToList) {
+                if (visibleToList.isNotEmpty()) rvContact.scrollToPosition(visibleToList.size - 1)
             }
         }
 

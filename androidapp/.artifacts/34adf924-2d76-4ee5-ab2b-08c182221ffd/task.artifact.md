@@ -1,5 +1,6 @@
-# Task List - Incoming Message Controls
+# Task List - Incoming Blocked Message Overlay
 
-- [x] Update `AlertCard.tsx` to show **View** and **Block** buttons for incoming messages
-- [x] Update `ViewModels.kt` incoming message decision handling (Block -> hidden / overlay)
-- [x] Verify compilation and test incoming message flow
+- [ ] Add `isBlockedByParent` to `Message.kt`
+- [ ] Update `ChatViewModel` & `SimulatorViewModel` decision handlers for incoming `BLOCK` (`isBlockedByParent = true`)
+- [ ] Update `ChatAdapter.kt` to show `"You can't view this message"` restriction overlay when `isBlockedByParent` is true
+- [ ] Verify build and test incoming block overlay workflow

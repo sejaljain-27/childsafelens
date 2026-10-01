@@ -161,7 +161,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
 
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
-        val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
+        val displayStr = if (policy.requiresParentApproval) text else filteredText
 
         val msg = Message(
             id = UUID.randomUUID().toString(),
@@ -170,7 +170,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             timestamp = System.currentTimeMillis(),
             riskLevel = riskLevel,
             displayText = displayStr,
-            isRevealed = true
+            isRevealed = true,
+            visibleToReceiver = !policy.requiresParentApproval
         )
         addMessage(msg)
 
@@ -182,9 +183,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _pendingApprovalState.postValue(false)
                     viewModelScope.launch(Dispatchers.Main) {
                         when (result) {
-                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText)
-                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, "[Message Blocked (Timeout)]")
-                            else -> updateMessageDisplay(msg.id, "[Blocked]")
+                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText, true)
+                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, text, false)
+                            else -> updateMessageDisplay(msg.id, text, false)
                         }
                     }
                 }
@@ -206,11 +207,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val upperDecision = decision.uppercase()
                 viewModelScope.launch(Dispatchers.Main) {
                     if (upperDecision in listOf("ALLOW", "SHOW")) {
-                        updateMessageDisplay(msg.id, filteredText)
+                        updateMessageDisplay(msg.id, filteredText, true)
                     } else if (upperDecision in listOf("BLOCK", "HIDE")) {
-                        updateMessageDisplay(msg.id, "[Message Blocked]")
+                        // Stealth block: sender keeps normal text (optimistic send), but visibleToReceiver = false
+                        updateMessageDisplay(msg.id, text, false)
                     } else if (upperDecision == "EDIT") {
-                        updateMessageDisplay(msg.id, "[Edit Required: ${guidance ?: "Please rephrase"}]")
+                        // Sender-only edit guidance prompt
+                        updateMessageDisplay(msg.id, "$text ⚠️ (${guidance ?: "Please rephrase your message before sending."})", false)
                     }
                 }
             }
@@ -224,7 +227,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
         
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
-        val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
+        val displayStr = if (policy.requiresParentApproval) text else filteredText
 
         val msg = Message(
             id = UUID.randomUUID().toString(),
@@ -233,7 +236,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             timestamp = System.currentTimeMillis(),
             riskLevel = riskLevel,
             displayText = displayStr,
-            isRevealed = true
+            isRevealed = true,
+            visibleToReceiver = !policy.requiresParentApproval
         )
         addMessage(msg)
 
@@ -245,9 +249,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _pendingApprovalState.postValue(false)
                     viewModelScope.launch(Dispatchers.Main) {
                         when (result) {
-                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText)
-                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, "[Message Blocked (Timeout)]")
-                            else -> updateMessageDisplay(msg.id, "[Blocked]")
+                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText, true)
+                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, text, false)
+                            else -> updateMessageDisplay(msg.id, text, false)
                         }
                     }
                 }
@@ -269,11 +273,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val upperDecision = decision.uppercase()
                 viewModelScope.launch(Dispatchers.Main) {
                     if (upperDecision in listOf("ALLOW", "SHOW")) {
-                        updateMessageDisplay(msg.id, filteredText)
+                        updateMessageDisplay(msg.id, filteredText, true)
                     } else if (upperDecision in listOf("BLOCK", "HIDE")) {
-                        updateMessageDisplay(msg.id, "[Message Blocked]")
+                        updateMessageDisplay(msg.id, text, false)
                     } else if (upperDecision == "EDIT") {
-                        updateMessageDisplay(msg.id, "[Edit Required: ${guidance ?: "Please rephrase"}]")
+                        updateMessageDisplay(msg.id, "$text ⚠️ (${guidance ?: "Please rephrase"})", false)
                     }
                 }
             }
@@ -292,11 +296,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _messages.value = updated
     }
 
-    private fun updateMessageDisplay(messageId: String, newText: String) {
+    private fun updateMessageDisplay(messageId: String, newText: String, visibleToReceiver: Boolean) {
         val currentList = _messages.value.orEmpty()
         val updated = currentList.map {
             if (it.id == messageId) {
-                it.copy(displayText = newText)
+                it.copy(displayText = newText, visibleToReceiver = visibleToReceiver)
             } else {
                 it
             }
@@ -339,7 +343,7 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
 
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
-        val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
+        val displayStr = if (policy.requiresParentApproval) text else filteredText
 
         val msg = Message(
             id = UUID.randomUUID().toString(),
@@ -348,7 +352,8 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             timestamp = System.currentTimeMillis(),
             riskLevel = riskLevel,
             displayText = displayStr,
-            isRevealed = true
+            isRevealed = true,
+            visibleToReceiver = !policy.requiresParentApproval
         )
         addMessage(msg)
 
@@ -360,9 +365,9 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
                     _pendingApprovalState.postValue(false)
                     viewModelScope.launch(Dispatchers.Main) {
                         when (result) {
-                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText)
-                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, "[Message Blocked (Timeout)]")
-                            else -> updateMessageDisplay(msg.id, "[Blocked]")
+                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText, true)
+                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, text, false)
+                            else -> updateMessageDisplay(msg.id, text, false)
                         }
                     }
                 }
@@ -384,11 +389,11 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
                 val upperDecision = decision.uppercase()
                 viewModelScope.launch(Dispatchers.Main) {
                     if (upperDecision in listOf("ALLOW", "SHOW")) {
-                        updateMessageDisplay(msg.id, filteredText)
+                        updateMessageDisplay(msg.id, filteredText, true)
                     } else if (upperDecision in listOf("BLOCK", "HIDE")) {
-                        updateMessageDisplay(msg.id, "[Message Blocked]")
+                        updateMessageDisplay(msg.id, text, false)
                     } else if (upperDecision == "EDIT") {
-                        updateMessageDisplay(msg.id, "[Edit Required: ${guidance ?: "Please rephrase"}]")
+                        updateMessageDisplay(msg.id, "$text ⚠️ (${guidance ?: "Please rephrase your message before sending."})", false)
                     }
                 }
             }
@@ -403,7 +408,7 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
 
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
-        val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
+        val displayStr = if (policy.requiresParentApproval) text else filteredText
 
         val msg = Message(
             id = UUID.randomUUID().toString(),
@@ -412,7 +417,8 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             timestamp = System.currentTimeMillis(),
             riskLevel = riskLevel,
             displayText = displayStr,
-            isRevealed = true
+            isRevealed = true,
+            visibleToReceiver = !policy.requiresParentApproval
         )
         addMessage(msg)
 
@@ -424,9 +430,9 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
                     _pendingApprovalState.postValue(false)
                     viewModelScope.launch(Dispatchers.Main) {
                         when (result) {
-                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText)
-                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, "[Message Blocked (Timeout)]")
-                            else -> updateMessageDisplay(msg.id, "[Blocked]")
+                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText, true)
+                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, text, false)
+                            else -> updateMessageDisplay(msg.id, text, false)
                         }
                     }
                 }
@@ -448,11 +454,11 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
                 val upperDecision = decision.uppercase()
                 viewModelScope.launch(Dispatchers.Main) {
                     if (upperDecision in listOf("ALLOW", "SHOW")) {
-                        updateMessageDisplay(msg.id, filteredText)
+                        updateMessageDisplay(msg.id, filteredText, true)
                     } else if (upperDecision in listOf("BLOCK", "HIDE")) {
-                        updateMessageDisplay(msg.id, "[Message Blocked]")
+                        updateMessageDisplay(msg.id, text, false)
                     } else if (upperDecision == "EDIT") {
-                        updateMessageDisplay(msg.id, "[Edit Required: ${guidance ?: "Please rephrase"}]")
+                        updateMessageDisplay(msg.id, "$text ⚠️ (${guidance ?: "Please rephrase"})", false)
                     }
                 }
             }
@@ -471,11 +477,11 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
         _messages.value = updated
     }
 
-    private fun updateMessageDisplay(messageId: String, newText: String) {
+    private fun updateMessageDisplay(messageId: String, newText: String, visibleToReceiver: Boolean) {
         val currentList = _messages.value.orEmpty()
         val updated = currentList.map {
             if (it.id == messageId) {
-                it.copy(displayText = newText)
+                it.copy(displayText = newText, visibleToReceiver = visibleToReceiver)
             } else {
                 it
             }

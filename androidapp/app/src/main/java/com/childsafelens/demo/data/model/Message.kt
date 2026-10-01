@@ -7,7 +7,8 @@ data class Message(
     val timestamp: Long,
     val riskLevel: RiskLevel = RiskLevel.PENDING,
     var displayText: String = text,
-    var isRevealed: Boolean = false
+    var isRevealed: Boolean = false,
+    var visibleToReceiver: Boolean = true
 )
 
 enum class Sender {
