@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ProgressBar
 import androidx.appcompat.widget.Toolbar
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
@@ -76,13 +77,16 @@ class ChatFragment : Fragment() {
             }
         }
 
-        // Observe Pending Approval State (Freeze / Waiting Overlay)
+        // Observe Pending Approval State (Pure Spinner Buffer Sign with NO text)
         viewModel.pendingApprovalState.observe(viewLifecycleOwner) { isPending ->
             if (isPending) {
                 if (waitingDialog == null) {
+                    val progressBar = ProgressBar(requireContext()).apply {
+                        isIndeterminate = true
+                        setPadding(50, 50, 50, 50)
+                    }
                     waitingDialog = AlertDialog.Builder(requireContext())
-                        .setTitle("Pending Review")
-                        .setMessage("⏳ Waiting for parent approval...")
+                        .setView(progressBar)
                         .setCancelable(false)
                         .create()
                 }

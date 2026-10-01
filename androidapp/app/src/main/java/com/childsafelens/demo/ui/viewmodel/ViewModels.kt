@@ -10,6 +10,8 @@ import com.childsafelens.demo.EventLogger
 import com.childsafelens.demo.IncidentManager
 import com.childsafelens.demo.Inference
 import com.childsafelens.demo.Masker
+import com.childsafelens.demo.ParentDecisionManager
+import com.childsafelens.demo.PendingMessageManager
 import com.childsafelens.demo.RiskPolicyManager
 import com.childsafelens.demo.data.db.AppDatabase
 import com.childsafelens.demo.data.model.ChildProfile
@@ -158,10 +160,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val filteredText = applySafeSendFilter(text)
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
 
-        if (policy.requiresParentApproval) {
-            _pendingApprovalState.value = true
-        }
-
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
         val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
 
@@ -176,6 +174,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         addMessage(msg)
 
+        if (policy.requiresParentApproval) {
+            _pendingApprovalState.value = true
+            PendingMessageManager.holdMessage(incidentId, 60000L) {
+                val defaultAction = if (score > 0.8f) RiskPolicyManager.TimeoutAction.BLOCK else RiskPolicyManager.TimeoutAction.ALLOW
+                ParentDecisionManager.handleTimeout(incidentId, defaultAction) { result ->
+                    _pendingApprovalState.postValue(false)
+                    viewModelScope.launch(Dispatchers.Main) {
+                        when (result) {
+                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText)
+                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, "[Message Blocked (Timeout)]")
+                            else -> updateMessageDisplay(msg.id, "[Blocked]")
+                        }
+                    }
+                }
+            }
+        }
+
         IncidentManager.createAndSendIncident(
             incidentId = incidentId,
             type = "OUTGOING",
@@ -186,6 +201,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             packageName = "com.childsafelens.demo",
             status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
             onDecisionReceived = { decision, guidance ->
+                PendingMessageManager.cancelTimeout(incidentId)
                 _pendingApprovalState.postValue(false)
                 val upperDecision = decision.uppercase()
                 viewModelScope.launch(Dispatchers.Main) {
@@ -207,10 +223,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val filteredText = applySafeSendFilter(text)
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
         
-        if (policy.requiresParentApproval) {
-            _pendingApprovalState.value = true
-        }
-
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
         val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
 
@@ -225,6 +237,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         addMessage(msg)
 
+        if (policy.requiresParentApproval) {
+            _pendingApprovalState.value = true
+            PendingMessageManager.holdMessage(incidentId, 60000L) {
+                val defaultAction = if (score > 0.8f) RiskPolicyManager.TimeoutAction.BLOCK else RiskPolicyManager.TimeoutAction.ALLOW
+                ParentDecisionManager.handleTimeout(incidentId, defaultAction) { result ->
+                    _pendingApprovalState.postValue(false)
+                    viewModelScope.launch(Dispatchers.Main) {
+                        when (result) {
+                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText)
+                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, "[Message Blocked (Timeout)]")
+                            else -> updateMessageDisplay(msg.id, "[Blocked]")
+                        }
+                    }
+                }
+            }
+        }
+
         IncidentManager.createAndSendIncident(
             incidentId = incidentId,
             type = "INCOMING",
@@ -235,6 +264,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             packageName = "com.childsafelens.demo",
             status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
             onDecisionReceived = { decision, guidance ->
+                PendingMessageManager.cancelTimeout(incidentId)
                 _pendingApprovalState.postValue(false)
                 val upperDecision = decision.uppercase()
                 viewModelScope.launch(Dispatchers.Main) {
@@ -308,10 +338,6 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
         val filteredText = applySafeSendFilter(text)
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
 
-        if (policy.requiresParentApproval) {
-            _pendingApprovalState.value = true
-        }
-
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
         val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
 
@@ -326,6 +352,23 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
         )
         addMessage(msg)
 
+        if (policy.requiresParentApproval) {
+            _pendingApprovalState.value = true
+            PendingMessageManager.holdMessage(incidentId, 60000L) {
+                val defaultAction = if (score > 0.8f) RiskPolicyManager.TimeoutAction.BLOCK else RiskPolicyManager.TimeoutAction.ALLOW
+                ParentDecisionManager.handleTimeout(incidentId, defaultAction) { result ->
+                    _pendingApprovalState.postValue(false)
+                    viewModelScope.launch(Dispatchers.Main) {
+                        when (result) {
+                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText)
+                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, "[Message Blocked (Timeout)]")
+                            else -> updateMessageDisplay(msg.id, "[Blocked]")
+                        }
+                    }
+                }
+            }
+        }
+
         IncidentManager.createAndSendIncident(
             incidentId = incidentId,
             type = "OUTGOING",
@@ -336,6 +379,7 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             packageName = "com.childsafelens.demo",
             status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
             onDecisionReceived = { decision, guidance ->
+                PendingMessageManager.cancelTimeout(incidentId)
                 _pendingApprovalState.postValue(false)
                 val upperDecision = decision.uppercase()
                 viewModelScope.launch(Dispatchers.Main) {
@@ -358,10 +402,6 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
         val filteredText = applySafeSendFilter(text)
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
 
-        if (policy.requiresParentApproval) {
-            _pendingApprovalState.value = true
-        }
-
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
         val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
 
@@ -376,6 +416,23 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
         )
         addMessage(msg)
 
+        if (policy.requiresParentApproval) {
+            _pendingApprovalState.value = true
+            PendingMessageManager.holdMessage(incidentId, 60000L) {
+                val defaultAction = if (score > 0.8f) RiskPolicyManager.TimeoutAction.BLOCK else RiskPolicyManager.TimeoutAction.ALLOW
+                ParentDecisionManager.handleTimeout(incidentId, defaultAction) { result ->
+                    _pendingApprovalState.postValue(false)
+                    viewModelScope.launch(Dispatchers.Main) {
+                        when (result) {
+                            ParentDecisionManager.DecisionResult.Allow -> updateMessageDisplay(msg.id, filteredText)
+                            ParentDecisionManager.DecisionResult.Block -> updateMessageDisplay(msg.id, "[Message Blocked (Timeout)]")
+                            else -> updateMessageDisplay(msg.id, "[Blocked]")
+                        }
+                    }
+                }
+            }
+        }
+
         IncidentManager.createAndSendIncident(
             incidentId = incidentId,
             type = "INCOMING",
@@ -386,6 +443,7 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             packageName = "com.childsafelens.demo",
             status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
             onDecisionReceived = { decision, guidance ->
+                PendingMessageManager.cancelTimeout(incidentId)
                 _pendingApprovalState.postValue(false)
                 val upperDecision = decision.uppercase()
                 viewModelScope.launch(Dispatchers.Main) {
