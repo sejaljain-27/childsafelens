@@ -1,93 +1,132 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-
-export type AlertType = {
-  id: string;
-  message: string;
-  risk: 'High' | 'Medium';
-  timestamp: string;
-};
+import type { IncidentType } from '../services/alertsService';
 
 interface AlertCardProps {
-  alert: AlertType;
+  alert: IncidentType;
+  onDecision: (incidentId: string, decision: 'ALLOW' | 'BLOCK' | 'EDIT') => void;
 }
 
-const AlertCard: React.FC<AlertCardProps> = ({ alert }) => {
-  const isHigh = alert.risk === 'High';
+const AlertCard: React.FC<AlertCardProps> = ({ alert, onDecision }) => {
+  const isHigh = alert.riskLevel === 'HIGH' || alert.riskLevel === 'CRITICAL';
+  const isPending = alert.status === 'PENDING';
+
   return (
     <View style={[styles.card, isHigh && styles.highRiskCard]}>
       <View style={styles.header}>
         <View style={[styles.badge, { backgroundColor: isHigh ? 'rgba(244, 63, 94, 0.15)' : 'rgba(245, 158, 11, 0.1)' }]}>
           <MaterialIcons
             name={isHigh ? 'error-outline' : 'warning-amber'}
-            size={48}
+            size={24}
             color={isHigh ? '#F43F5E' : '#FBBF24'}
           />
           <Text style={[styles.badgeText, { color: isHigh ? '#F43F5E' : '#FBBF24' }]}>
-            {alert.risk} Risk
+            {alert.riskLevel} Risk ({alert.category})
           </Text>
         </View>
-        <Text style={styles.time}>{alert.timestamp}</Text>
+        <Text style={styles.time}>{new Date(alert.timestamp).toLocaleTimeString()}</Text>
       </View>
       <Text style={[styles.message, isHigh && styles.highRiskMessage]}>
-        {alert.message}
+        "{alert.messageSnippet}"
       </Text>
+      <Text style={styles.status}>Status: {alert.status} {alert.parentDecision ? `(${alert.parentDecision})` : ''}</Text>
+
+      {isPending && (
+        <View style={styles.actions}>
+          <TouchableOpacity style={[styles.btn, styles.allowBtn]} onPress={() => onDecision(alert.incidentId, 'ALLOW')}>
+            <Text style={styles.btnText}>Allow</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.btn, styles.editBtn]} onPress={() => onDecision(alert.incidentId, 'EDIT')}>
+            <Text style={styles.btnText}>Edit</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.btn, styles.blockBtn]} onPress={() => onDecision(alert.incidentId, 'BLOCK')}>
+            <Text style={styles.btnText}>Block</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 };
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 60,
-    padding: 64,
-    marginBottom: 48,
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.2)',
-    backdropFilter: 'blur(16px)',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     elevation: 2,
-  } as any,
-
+  },
   highRiskCard: {
-    backgroundColor: 'rgba(244, 63, 94, 0.1)',
-    borderColor: 'rgba(244, 63, 94, 0.2)',
+    backgroundColor: '#FFF1F2',
+    borderColor: '#FECDD3',
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 12,
   },
   badge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 24,
-    gap: 12,
-  } as any,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    gap: 8,
+  },
   badgeText: {
-    fontSize: 48,
+    fontSize: 14,
     fontWeight: '700',
     textTransform: 'uppercase',
   },
   time: {
-    fontSize: 48,
-    color: 'rgba(255, 255, 255, 0.5)',
+    fontSize: 12,
+    color: '#64748B',
     fontWeight: '500',
   },
   message: {
-    fontSize: 64,
-    color: '#E2E8F0',
-    lineHeight: 80,
+    fontSize: 16,
+    color: '#1E293B',
+    lineHeight: 22,
     fontWeight: '500',
+    marginBottom: 8,
   },
   highRiskMessage: {
-    color: '#FFE4E6',
+    color: '#881337',
+  },
+  status: {
+    fontSize: 12,
+    color: '#475569',
+    marginBottom: 12,
+    fontStyle: 'italic',
+  },
+  actions: {
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'flex-end',
+  },
+  btn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  allowBtn: {
+    backgroundColor: '#10B981',
+  },
+  editBtn: {
+    backgroundColor: '#F59E0B',
+  },
+  blockBtn: {
+    backgroundColor: '#EF4444',
+  },
+  btnText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 14,
   },
 });
 
 export default AlertCard;
-

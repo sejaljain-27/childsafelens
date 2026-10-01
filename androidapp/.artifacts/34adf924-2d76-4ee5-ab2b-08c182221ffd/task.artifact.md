@@ -1,8 +1,5 @@
-# Task List - Word Masking Implementation
+# Task List - Child Waiting Overlay & Main-Thread Response Dispatch
 
-- [x] Implement `Masker.kt` with robust tokenization, leet normalization, repetition shortening rules, and phrase matching
-- [x] Implement unit tests in `MaskerTest.kt` covering all required test cases
-- [x] Update `NudgeAccessibilityService.kt` to integrate `Masker.init` and handle outgoing message masking, silent masking, ACTION_SET_TEXT writing, and re-scoring/auto-send
-- [x] Implement `IncomingOverlayManager.kt` to cover incoming masked text nodes with non-focusable accessibility overlays
-- [x] Implement `MaskingNotificationListenerService.kt` and register it in `AndroidManifest.xml`
-- [x] Verify functionality with tests and builds
+- [ ] Update `ChatViewModel` and `SimulatorViewModel` with `pendingApprovalState` LiveData and main-thread dispatches
+- [ ] Update `ChatFragment.kt` and `DualChatFragment.kt` to show/dismiss waiting overlay
+- [ ] Verify build and test end-to-end

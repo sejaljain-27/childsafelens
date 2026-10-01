@@ -1,18 +1,12 @@
 """
 main.py — ChildSafeLens demo backend.
 
-Three endpoints, matching the API contract in the July 9 Demo Implementation
-Guide:
-
-    POST /predict     -> score a message for risk
-    POST /log-event    -> log a risk event (risk level + timestamp only, never text)
-    GET  /events        -> aggregated counts for the dashboard
-
-Run locally:
-    uvicorn main:app --reload --host 0.0.0.0 --port 8000
-
-Then B (input app) and D (dashboard) point their API_BASE_URL at wherever
-this ends up deployed (see README.md for Render/Railway steps).
+Provides endpoints for:
+    - /predict: score a message for risk
+    - /log-event: log a risk event
+    - /events: aggregated counts
+    - /incidents: manage pending parent approval incidents (mapped by parentEmail & childName)
+    - /settings: parent default timeout policies
 """
 
 import uuid
@@ -27,9 +21,6 @@ from model import score_text
 
 app = FastAPI(title="ChildSafeLens Demo API")
 
-# Wide-open CORS for the demo — both the input app and the dashboard app
-# call this from Expo Go / emulators on different origins. Tighten this
-# before any real deployment beyond the demo.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,9 +28,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory event store — fine for a demo. Swap for SQLite/Postgres later
-# (see README.md) without changing the endpoints below.
 _events = []
+_incidents = {} # incident_id -> incident dict
+_parent_settings = {
+    "medium_risk_timeout_action": "ALLOW",
+    "high_risk_timeout_action": "BLOCK",
+    "critical_risk_timeout_action": "KEEP_PENDING",
+    "timeout_seconds": 60
+}
 
 RiskLevel = Literal["low_risk", "medium_risk", "high_risk"]
 
@@ -56,19 +52,34 @@ class PredictResponse(BaseModel):
 
 class LogEventRequest(BaseModel):
     risk_level: RiskLevel
-    timestamp: str | None = None  # ISO 8601; server fills this in if omitted
+    timestamp: str | None = None
 
 
-class LogEventResponse(BaseModel):
-    status: str
-    event_id: str
+class IncidentCreate(BaseModel):
+    incidentId: str
+    parentEmail: str = "default_parent@test.com"
+    childId: str = "default_child"
+    childName: str = "Aarav"
+    type: str
+    messageSnippet: str
+    riskScore: float
+    riskLevel: str
+    category: str
+    packageName: str
+    timestamp: int
+    status: str = "PENDING"
 
 
-class EventsResponse(BaseModel):
-    total_events: int
-    high_risk_count: int
-    medium_risk_count: int
-    low_risk_count: int
+class DecisionRequest(BaseModel):
+    decision: Literal["ALLOW", "BLOCK", "EDIT", "SHOW", "HIDE", "GUIDANCE"]
+    guidance: str | None = None
+
+
+class ParentSettings(BaseModel):
+    medium_risk_timeout_action: str
+    high_risk_timeout_action: str
+    critical_risk_timeout_action: str
+    timeout_seconds: int
 
 
 @app.get("/health")
@@ -82,36 +93,93 @@ def predict(req: PredictRequest):
     return PredictResponse(risk_score=round(risk_score, 4), is_risky=is_risky, label=label)
 
 
-@app.post("/log-event", response_model=LogEventResponse)
+@app.post("/log-event")
 def log_event(req: LogEventRequest):
     timestamp = req.timestamp or datetime.now(timezone.utc).isoformat()
     event_id = f"evt_{uuid.uuid4().hex[:8]}"
-
-    _events.append({
-        "event_id": event_id,
-        "risk_level": req.risk_level,
-        "timestamp": timestamp,
-    })
-
-    return LogEventResponse(status="ok", event_id=event_id)
+    _events.append({"event_id": event_id, "risk_level": req.risk_level, "timestamp": timestamp})
+    return {"status": "ok", "event_id": event_id}
 
 
-@app.get("/events", response_model=EventsResponse)
-def get_events():
+@app.get("/events")
+def get_events(parentEmail: str | None = None, childName: str | None = None):
+    # Filter events if needed or return aggregate
     high = sum(1 for e in _events if e["risk_level"] == "high_risk")
     medium = sum(1 for e in _events if e["risk_level"] == "medium_risk")
     low = sum(1 for e in _events if e["risk_level"] == "low_risk")
+    return {"total_events": len(_events), "high_risk_count": high, "medium_risk_count": medium, "low_risk_count": low}
 
-    return EventsResponse(
-        total_events=len(_events),
-        high_risk_count=high,
-        medium_risk_count=medium,
-        low_risk_count=low,
-    )
+
+@app.post("/incidents")
+def create_incident(inc: IncidentCreate):
+    _incidents[inc.incidentId] = {
+        "incidentId": inc.incidentId,
+        "parentEmail": inc.parentEmail,
+        "childId": inc.childId,
+        "childName": inc.childName,
+        "type": inc.type,
+        "messageSnippet": inc.messageSnippet,
+        "riskScore": inc.riskScore,
+        "riskLevel": inc.riskLevel,
+        "category": inc.category,
+        "packageName": inc.packageName,
+        "timestamp": inc.timestamp,
+        "status": inc.status,
+        "parentDecision": None,
+        "guidance": None
+    }
+    return {"status": "ok", "incidentId": inc.incidentId}
+
+
+@app.get("/incidents")
+def get_incidents(parentEmail: str | None = None, childName: str | None = None):
+    results = list(_incidents.values())
+    if parentEmail:
+        results = [i for i in results if i.get("parentEmail", "").lower() == parentEmail.lower()]
+    if childName:
+        results = [i for i in results if i.get("childName", "").lower() == childName.lower()]
+    return results
+
+
+@app.post("/incidents/{incident_id}/decision")
+def submit_decision(incident_id: str, req: DecisionRequest):
+    if incident_id not in _incidents:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    inc = _incidents[incident_id]
+    inc["parentDecision"] = req.decision
+    inc["guidance"] = req.guidance
+    inc["status"] = "ALLOWED" if req.decision in ["ALLOW", "SHOW"] else ("BLOCKED" if req.decision in ["BLOCK", "HIDE"] else "EDIT")
+    return {"status": "ok", "incidentId": incident_id, "status_updated": inc["status"]}
+
+
+@app.get("/incidents/{incident_id}/decision")
+def get_decision(incident_id: str):
+    if incident_id not in _incidents:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    inc = _incidents[incident_id]
+    return {
+        "incidentId": inc["incidentId"],
+        "status": inc["status"],
+        "parentDecision": inc["parentDecision"],
+        "guidance": inc["guidance"]
+    }
+
+
+@app.get("/settings", response_model=ParentSettings)
+def get_settings():
+    return ParentSettings(**_parent_settings)
+
+
+@app.post("/settings")
+def update_settings(settings: ParentSettings):
+    global _parent_settings
+    _parent_settings = settings.dict()
+    return {"status": "ok", "settings": _parent_settings}
 
 
 @app.delete("/events")
 def clear_events():
-    """Handy during rehearsal to reset the dashboard between test runs."""
     _events.clear()
+    _incidents.clear()
     return {"status": "cleared"}

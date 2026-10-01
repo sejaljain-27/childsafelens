@@ -1,5 +1,6 @@
 package com.childsafelens.demo.ui.chat
 
+import android.app.AlertDialog
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -14,7 +15,6 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.childsafelens.demo.R
 import com.childsafelens.demo.ui.viewmodel.SimulatorViewModel
-import com.google.android.material.bottomsheet.BottomSheetDialog
 
 class DualChatFragment : Fragment() {
 
@@ -27,8 +27,7 @@ class DualChatFragment : Fragment() {
     
     private lateinit var adapterChild: ChatAdapter
     private lateinit var adapterContact: ChatAdapter
-
-    private var warningBottomSheet: BottomSheetDialog? = null
+    private var waitingDialog: AlertDialog? = null
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
@@ -68,12 +67,20 @@ class DualChatFragment : Fragment() {
             }
         }
 
-        // Observe Nudge
-        viewModel.pendingChildMessage.observe(viewLifecycleOwner) { pending ->
-            if (pending != null) {
-                showNudgeBottomSheet()
+        // Observe Pending Approval State
+        viewModel.pendingApprovalState.observe(viewLifecycleOwner) { isPending ->
+            if (isPending) {
+                if (waitingDialog == null) {
+                    waitingDialog = AlertDialog.Builder(requireContext())
+                        .setTitle("Pending Review")
+                        .setMessage("⏳ Waiting for parent approval...")
+                        .setCancelable(false)
+                        .create()
+                }
+                waitingDialog?.show()
             } else {
-                warningBottomSheet?.dismiss()
+                waitingDialog?.dismiss()
+                waitingDialog = null
             }
         }
 
@@ -82,9 +89,7 @@ class DualChatFragment : Fragment() {
             val text = etChildInput.text.toString().trim()
             if (text.isNotEmpty()) {
                 viewModel.sendMessageAsChild(text)
-                if (viewModel.pendingChildMessage.value == null) {
-                    etChildInput.text.clear()
-                }
+                etChildInput.text.clear()
             }
         }
 
@@ -97,34 +102,9 @@ class DualChatFragment : Fragment() {
         }
     }
 
-    private fun showNudgeBottomSheet() {
-        val ctx = context ?: return
-        val dialog = BottomSheetDialog(ctx)
-        val sheetView = layoutInflater.inflate(R.layout.nudge_warning_bottom_sheet, null)
-        dialog.setContentView(sheetView)
-
-        sheetView.findViewById<Button>(R.id.btnEditMessage).setOnClickListener {
-            dialog.dismiss()
-            viewModel.cancelChildMessage()
-            etChildInput.requestFocus()
-        }
-
-        sheetView.findViewById<Button>(R.id.btnSendAnyway).setOnClickListener {
-            dialog.dismiss()
-            viewModel.confirmChildSendAnyway()
-            etChildInput.text.clear()
-        }
-
-        dialog.setOnCancelListener {
-            viewModel.cancelChildMessage()
-        }
-
-        warningBottomSheet = dialog
-        dialog.show()
-    }
-
     override fun onDestroyView() {
         super.onDestroyView()
-        warningBottomSheet?.dismiss()
+        waitingDialog?.dismiss()
+        waitingDialog = null
     }
 }

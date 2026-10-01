@@ -7,9 +7,10 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.asLiveData
 import androidx.lifecycle.viewModelScope
 import com.childsafelens.demo.EventLogger
+import com.childsafelens.demo.IncidentManager
 import com.childsafelens.demo.Inference
 import com.childsafelens.demo.Masker
-import com.childsafelens.demo.NudgeAccessibilityService
+import com.childsafelens.demo.RiskPolicyManager
 import com.childsafelens.demo.data.db.AppDatabase
 import com.childsafelens.demo.data.model.ChildProfile
 import com.childsafelens.demo.data.model.Message
@@ -146,16 +147,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _messages = MutableLiveData<List<Message>>(emptyList())
     val messages: LiveData<List<Message>> = _messages
 
-    private val _pendingOutgoingMessage = MutableLiveData<Message?>(null)
-    val pendingOutgoingMessage: LiveData<Message?> = _pendingOutgoingMessage
-
-    private val flaggedTerms = listOf("stupid", "idiot", "hate you", "ugly", "loser", "dumb", "shut up")
+    private val _pendingApprovalState = MutableLiveData<Boolean>(false)
+    val pendingApprovalState: LiveData<Boolean> = _pendingApprovalState
 
     fun sendMessage(text: String) {
         if (text.isBlank()) return
 
         val score = Inference.scoreText(text)
+        val policy = RiskPolicyManager.evaluate(score)
+        val filteredText = applySafeSendFilter(text)
+        val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
+
+        if (policy.requiresParentApproval) {
+            _pendingApprovalState.value = true
+        }
+
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
+        val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
 
         val msg = Message(
             id = UUID.randomUUID().toString(),
@@ -163,73 +171,74 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             sender = Sender.CHILD,
             timestamp = System.currentTimeMillis(),
             riskLevel = riskLevel,
-            displayText = text,
+            displayText = displayStr,
             isRevealed = true
         )
-
-        if (riskLevel == RiskLevel.SAFE) {
-            addMessage(msg)
-        } else {
-            _pendingOutgoingMessage.value = msg
-        }
-    }
-
-    fun confirmSendAnyway() {
-        val msg = _pendingOutgoingMessage.value ?: return
-        _pendingOutgoingMessage.value = null
-
-        val filteredText = applySafeSendFilter(msg.text)
-        msg.displayText = filteredText
-
         addMessage(msg)
 
-        val score = if (msg.riskLevel == RiskLevel.HIGH) 0.9f else 0.6f
-        viewModelScope.launch(Dispatchers.IO) {
-            EventLogger.logNudgeEvent(
-                riskLevel = score,
-                timestamp = msg.timestamp,
-                direction = "OUTGOING",
-                messageId = msg.id
-            )
-        }
-
-        triggerParentAlert()
-    }
-
-    fun cancelPendingMessage() {
-        _pendingOutgoingMessage.value = null
+        IncidentManager.createAndSendIncident(
+            incidentId = incidentId,
+            type = "OUTGOING",
+            message = text,
+            riskScore = score,
+            riskLevel = policy.riskLevel,
+            category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
+            packageName = "com.childsafelens.demo",
+            status = if (policy.requiresParentApproval) "PENDING" else "ALLOWED",
+            onDecisionReceived = { decision, _ ->
+                _pendingApprovalState.postValue(false)
+                if (decision.uppercase() in listOf("ALLOW", "SHOW")) {
+                    // Update message display text to filtered text upon approval
+                    viewModelScope.launch(Dispatchers.Main) {
+                        updateMessageDisplay(msg.id, filteredText)
+                    }
+                }
+            }
+        )
     }
 
     fun injectPresetMessage(text: String) {
         val score = Inference.scoreText(text)
-        val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
-
-        // Apply masking to the display text if it's risky
-        val filteredText = if (riskLevel != RiskLevel.SAFE) applySafeSendFilter(text) else text
+        val policy = RiskPolicyManager.evaluate(score)
+        val filteredText = applySafeSendFilter(text)
+        val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
         
+        if (policy.requiresParentApproval) {
+            _pendingApprovalState.value = true
+        }
+
+        val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
+        val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
+
         val msg = Message(
             id = UUID.randomUUID().toString(),
             text = text,
             sender = Sender.SIMULATED_CONTACT,
             timestamp = System.currentTimeMillis(),
             riskLevel = riskLevel,
-            displayText = filteredText,
-            isRevealed = (riskLevel == RiskLevel.SAFE)
+            displayText = displayStr,
+            isRevealed = true
         )
-
         addMessage(msg)
 
-        if (riskLevel != RiskLevel.SAFE) {
-            viewModelScope.launch(Dispatchers.IO) {
-                EventLogger.logNudgeEvent(
-                    riskLevel = score,
-                    timestamp = msg.timestamp,
-                    direction = "INCOMING",
-                    messageId = msg.id
-                )
+        IncidentManager.createAndSendIncident(
+            incidentId = incidentId,
+            type = "INCOMING",
+            message = text,
+            riskScore = score,
+            riskLevel = policy.riskLevel,
+            category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
+            packageName = "com.childsafelens.demo",
+            status = if (policy.requiresParentApproval) "PENDING" else "ALLOWED",
+            onDecisionReceived = { decision, _ ->
+                _pendingApprovalState.postValue(false)
+                if (decision.uppercase() in listOf("ALLOW", "SHOW")) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        updateMessageDisplay(msg.id, filteredText)
+                    }
+                }
             }
-            triggerParentAlert()
-        }
+        )
     }
 
     fun revealMessage(messageId: String) {
@@ -244,9 +253,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _messages.value = updated
     }
 
-    fun ignoreMessage(messageId: String) {
-        // Keeps bubble masked as requested
+    private fun updateMessageDisplay(messageId: String, newText: String) {
+        val currentList = _messages.value.orEmpty()
+        val updated = currentList.map {
+            if (it.id == messageId) {
+                it.copy(displayText = newText)
+            } else {
+                it
+            }
+        }
+        _messages.value = updated
     }
+
+    fun ignoreMessage(messageId: String) {}
 
     private fun addMessage(message: Message) {
         val currentList = _messages.value.orEmpty()
@@ -256,15 +275,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun applySafeSendFilter(text: String): String {
         Masker.ensureInitialized(getApplication())
         return Masker.mask(text)
-    }
-
-    private fun triggerParentAlert() {
-        NudgeAccessibilityService.instance?.let { service ->
-            service.triggerOverlay(
-                onEdit = {},
-                onSendAnyway = {}
-            )
-        }
     }
 }
 
@@ -279,15 +289,22 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
     private val _messages = MutableLiveData<List<Message>>(emptyList())
     val messages: LiveData<List<Message>> = _messages
 
-    private val _pendingChildMessage = MutableLiveData<Message?>(null)
-    val pendingChildMessage: LiveData<Message?> = _pendingChildMessage
-
-    private val flaggedTerms = listOf("stupid", "idiot", "hate you", "ugly", "loser", "dumb", "shut up")
+    private val _pendingApprovalState = MutableLiveData<Boolean>(false)
+    val pendingApprovalState: LiveData<Boolean> = _pendingApprovalState
 
     fun sendMessageAsChild(text: String) {
         if (text.isBlank()) return
         val score = Inference.scoreText(text)
+        val policy = RiskPolicyManager.evaluate(score)
+        val filteredText = applySafeSendFilter(text)
+        val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
+
+        if (policy.requiresParentApproval) {
+            _pendingApprovalState.value = true
+        }
+
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
+        val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
 
         val msg = Message(
             id = UUID.randomUUID().toString(),
@@ -295,58 +312,74 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             sender = Sender.CHILD,
             timestamp = System.currentTimeMillis(),
             riskLevel = riskLevel,
-            displayText = text,
-            isRevealed = (riskLevel == RiskLevel.SAFE)
+            displayText = displayStr,
+            isRevealed = true
         )
-
-        if (riskLevel == RiskLevel.SAFE) {
-            addMessage(msg)
-        } else {
-            _pendingChildMessage.value = msg
-        }
-    }
-
-    fun confirmChildSendAnyway() {
-        val msg = _pendingChildMessage.value ?: return
-        _pendingChildMessage.value = null
-        msg.displayText = applySafeSendFilter(msg.text)
-        // Keep isRevealed = false so the receiver sees the warning
         addMessage(msg)
 
-        val score = if (msg.riskLevel == RiskLevel.HIGH) 0.9f else 0.6f
-        viewModelScope.launch(Dispatchers.IO) {
-            EventLogger.logNudgeEvent(score, msg.timestamp, "OUTGOING", msg.id)
-        }
-        triggerOverlay()
-    }
-
-    fun cancelChildMessage() {
-        _pendingChildMessage.value = null
+        IncidentManager.createAndSendIncident(
+            incidentId = incidentId,
+            type = "OUTGOING",
+            message = text,
+            riskScore = score,
+            riskLevel = policy.riskLevel,
+            category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
+            packageName = "com.childsafelens.demo",
+            status = if (policy.requiresParentApproval) "PENDING" else "ALLOWED",
+            onDecisionReceived = { decision, _ ->
+                _pendingApprovalState.postValue(false)
+                if (decision.uppercase() in listOf("ALLOW", "SHOW")) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        updateMessageDisplay(msg.id, filteredText)
+                    }
+                }
+            }
+        )
     }
 
     fun sendMessageAsContact(text: String) {
         if (text.isBlank()) return
         val score = Inference.scoreText(text)
-        val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
+        val policy = RiskPolicyManager.evaluate(score)
+        val filteredText = applySafeSendFilter(text)
+        val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
 
-        val filteredText = if (riskLevel != RiskLevel.SAFE) applySafeSendFilter(text) else text
+        if (policy.requiresParentApproval) {
+            _pendingApprovalState.value = true
+        }
+
+        val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
+        val displayStr = if (policy.requiresParentApproval) "$text ⏳ (Pending Parent Review)" else filteredText
+
         val msg = Message(
             id = UUID.randomUUID().toString(),
             text = text,
             sender = Sender.SIMULATED_CONTACT,
             timestamp = System.currentTimeMillis(),
             riskLevel = riskLevel,
-            displayText = filteredText,
-            isRevealed = (riskLevel == RiskLevel.SAFE)
+            displayText = displayStr,
+            isRevealed = true
         )
         addMessage(msg)
 
-        if (riskLevel != RiskLevel.SAFE) {
-            viewModelScope.launch(Dispatchers.IO) {
-                EventLogger.logNudgeEvent(score, msg.timestamp, "INCOMING", msg.id)
+        IncidentManager.createAndSendIncident(
+            incidentId = incidentId,
+            type = "INCOMING",
+            message = text,
+            riskScore = score,
+            riskLevel = policy.riskLevel,
+            category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
+            packageName = "com.childsafelens.demo",
+            status = if (policy.requiresParentApproval) "PENDING" else "ALLOWED",
+            onDecisionReceived = { decision, _ ->
+                _pendingApprovalState.postValue(false)
+                if (decision.uppercase() in listOf("ALLOW", "SHOW")) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        updateMessageDisplay(msg.id, filteredText)
+                    }
+                }
             }
-            triggerOverlay()
-        }
+        )
     }
 
     fun revealMessage(messageId: String) {
@@ -361,9 +394,19 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
         _messages.value = updated
     }
 
-    fun ignoreMessage(messageId: String) {
-        // Keeps bubble masked as requested
+    private fun updateMessageDisplay(messageId: String, newText: String) {
+        val currentList = _messages.value.orEmpty()
+        val updated = currentList.map {
+            if (it.id == messageId) {
+                it.copy(displayText = newText)
+            } else {
+                it
+            }
+        }
+        _messages.value = updated
     }
+
+    fun ignoreMessage(messageId: String) {}
 
     private fun addMessage(message: Message) {
         val current = _messages.value.orEmpty()
@@ -373,9 +416,5 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
     private fun applySafeSendFilter(text: String): String {
         Masker.ensureInitialized(getApplication())
         return Masker.mask(text)
-    }
-
-    private fun triggerOverlay() {
-        NudgeAccessibilityService.instance?.triggerOverlay({}, {})
     }
 }

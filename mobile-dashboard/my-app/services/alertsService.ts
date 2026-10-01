@@ -1,20 +1,81 @@
-// This service will later connect to backend/AI for real alerts
-import type { AlertType } from '../components/AlertCard';
+const API_BASE_URL = "http://localhost:8500";
 
-export const fetchAlerts = async (): Promise<AlertType[]> => {
-  // Simulate API call
-  return [
-    {
-      id: '1',
-      message: 'Potential cyberbullying detected in chat.',
-      risk: 'High',
-      timestamp: '2026-03-21 10:15',
-    },
-    {
-      id: '2',
-      message: 'Suspicious link shared.',
-      risk: 'Medium',
-      timestamp: '2026-03-20 18:42',
-    },
-  ];
+export interface IncidentType {
+  incidentId: string;
+  parentEmail: string;
+  childId: string;
+  childName: string;
+  type: string;
+  messageSnippet: string;
+  riskScore: number;
+  riskLevel: string;
+  category: string;
+  packageName: string;
+  timestamp: number;
+  status: string;
+  parentDecision?: string;
+  guidance?: string;
+}
+
+export interface DashboardStats {
+  total_events: number;
+  high_risk_count: number;
+  medium_risk_count: number;
+  low_risk_count: number;
+  pending_count: number;
+}
+
+export const fetchAlerts = async (parentEmail?: string, childName?: string): Promise<IncidentType[]> => {
+  try {
+    let url = `${API_BASE_URL}/incidents`;
+    const params = new URLSearchParams();
+    if (parentEmail) params.append('parentEmail', parentEmail);
+    if (childName) params.append('childName', childName);
+    if (params.toString()) url += `?${params.toString()}`;
+
+    const response = await fetch(url);
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch alerts from backend", error);
+    return [];
+  }
+};
+
+export const fetchDashboardStats = async (parentEmail?: string, childName?: string): Promise<DashboardStats> => {
+  try {
+    let url = `${API_BASE_URL}/events`;
+    const params = new URLSearchParams();
+    if (parentEmail) params.append('parentEmail', parentEmail);
+    if (childName) params.append('childName', childName);
+    if (params.toString()) url += `?${params.toString()}`;
+
+    const response = await fetch(url);
+    const data = await response.json();
+    const incidents = await fetchAlerts(parentEmail, childName);
+    const pendingCount = incidents.filter(i => i.status === 'PENDING').length;
+    return {
+      total_events: data.total_events || incidents.length,
+      high_risk_count: data.high_risk_count || incidents.filter(i => i.riskLevel === 'HIGH' || i.riskLevel === 'CRITICAL').length,
+      medium_risk_count: data.medium_risk_count || incidents.filter(i => i.riskLevel === 'MEDIUM').length,
+      low_risk_count: data.low_risk_count || incidents.filter(i => i.riskLevel === 'LOW').length,
+      pending_count: pendingCount
+    };
+  } catch (error) {
+    console.error("Failed to fetch dashboard stats", error);
+    return { total_events: 0, high_risk_count: 0, medium_risk_count: 0, low_risk_count: 0, pending_count: 0 };
+  }
+};
+
+export const submitDecision = async (incidentId: string, decision: "ALLOW" | "BLOCK" | "EDIT", guidance?: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/incidents/${incidentId}/decision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, guidance })
+    });
+    return await response.json();
+  } catch (error) {
+    console.error("Failed to submit decision", error);
+  }
 };

@@ -9,14 +9,16 @@ class ChildSafeLensApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // Initialize the event logger as soon as the process starts
-        // This ensures events are saved even if the Accessibility Service is not yet enabled.
+        // Initialize event logger
         EventLogger.init(this)
 
-        // Initialize the on-device ML inference engine
+        // Initialize ML inference engine
         Inference.init(this)
 
-        // Initialize the word masker engine
+        // Initialize word masker engine
         Masker.init(this)
+
+        // Initialize incident manager
+        IncidentManager.init(this)
     }
 }

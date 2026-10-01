@@ -1,12 +1,12 @@
 package com.childsafelens.demo.ui.chat
 
+import android.app.AlertDialog
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
-import android.widget.Toast
 import androidx.appcompat.widget.Toolbar
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
@@ -14,10 +14,8 @@ import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.childsafelens.demo.R
-import com.childsafelens.demo.data.model.Message
 import com.childsafelens.demo.security.SessionManager
 import com.childsafelens.demo.ui.viewmodel.ChatViewModel
-import com.google.android.material.bottomsheet.BottomSheetDialog
 
 class ChatFragment : Fragment() {
 
@@ -26,7 +24,7 @@ class ChatFragment : Fragment() {
     private lateinit var etMessageInput: EditText
     private lateinit var rvChat: RecyclerView
     private lateinit var adapter: ChatAdapter
-    private var warningBottomSheet: BottomSheetDialog? = null
+    private var waitingDialog: AlertDialog? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -78,12 +76,20 @@ class ChatFragment : Fragment() {
             }
         }
 
-        // Observe Outgoing Flagged message
-        viewModel.pendingOutgoingMessage.observe(viewLifecycleOwner) { pendingMsg ->
-            if (pendingMsg != null) {
-                showWarningBottomSheet(pendingMsg)
+        // Observe Pending Approval State (Freeze / Waiting Overlay)
+        viewModel.pendingApprovalState.observe(viewLifecycleOwner) { isPending ->
+            if (isPending) {
+                if (waitingDialog == null) {
+                    waitingDialog = AlertDialog.Builder(requireContext())
+                        .setTitle("Pending Review")
+                        .setMessage("⏳ Waiting for parent approval...")
+                        .setCancelable(false)
+                        .create()
+                }
+                waitingDialog?.show()
             } else {
-                warningBottomSheet?.dismiss()
+                waitingDialog?.dismiss()
+                waitingDialog = null
             }
         }
 
@@ -92,10 +98,7 @@ class ChatFragment : Fragment() {
             val text = etMessageInput.text.toString().trim()
             if (text.isNotEmpty()) {
                 viewModel.sendMessage(text)
-                // Clear input only if not flagged (if flagged, it will copy to bottom sheet and keep text on edit)
-                if (viewModel.pendingOutgoingMessage.value == null) {
-                    etMessageInput.text.clear()
-                }
+                etMessageInput.text.clear()
             }
         }
 
@@ -114,35 +117,9 @@ class ChatFragment : Fragment() {
         }
     }
 
-    private fun showWarningBottomSheet(message: Message) {
-        val ctx = context ?: return
-        val dialog = BottomSheetDialog(ctx)
-        val sheetView = layoutInflater.inflate(R.layout.nudge_warning_bottom_sheet, null)
-        dialog.setContentView(sheetView)
-
-        sheetView.findViewById<Button>(R.id.btnEditMessage).setOnClickListener {
-            dialog.dismiss()
-            viewModel.cancelPendingMessage()
-            etMessageInput.requestFocus()
-            etMessageInput.setSelection(etMessageInput.text.length)
-        }
-
-        sheetView.findViewById<Button>(R.id.btnSendAnyway).setOnClickListener {
-            dialog.dismiss()
-            viewModel.confirmSendAnyway()
-            etMessageInput.text.clear()
-        }
-
-        dialog.setOnCancelListener {
-            viewModel.cancelPendingMessage()
-        }
-
-        warningBottomSheet = dialog
-        dialog.show()
-    }
-
     override fun onDestroyView() {
         super.onDestroyView()
-        warningBottomSheet?.dismiss()
+        waitingDialog?.dismiss()
+        waitingDialog = null
     }
 }

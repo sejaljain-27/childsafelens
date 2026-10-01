@@ -7,59 +7,46 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import java.util.UUID
 import kotlin.concurrent.thread
 
 /**
- * PERSON A OWNS THIS FILE.
- *
- * The live capture + decision engine. Listens for Send button clicks,
- * extracts text from the input field, masks inappropriate words, scores it off main thread,
- * and triggers blocking overlay or silent auto-send.
+ * PERSON A / SILENT WORKFLOW:
+ * Listens for Send button clicks, extracts text, masks inappropriate words,
+ * scores silently in the background, creates an Incident, and holds messages in PENDING
+ * state awaiting parent decision or 60s timeout without showing any child-facing overlays.
  */
 class NudgeAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "NudgeService"
-        private const val RISK_THRESHOLD = 0.5f
 
         @Volatile
         var instance: NudgeAccessibilityService? = null
             private set
     }
 
-    private lateinit var overlayManager: OverlayManager
     private lateinit var incomingOverlayManager: IncomingOverlayManager
     private val handler = Handler(Looper.getMainLooper())
-
-    private var lastEvaluatedText: String? = null
-    private var lastOverlayShownTime = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        overlayManager = OverlayManager(applicationContext)
         incomingOverlayManager = IncomingOverlayManager(applicationContext)
         Inference.init(applicationContext)
         Masker.init(applicationContext)
-        Log.d(TAG, "Service connected")
+        IncidentManager.init(applicationContext)
+        Log.d(TAG, "Silent Background Service connected")
     }
 
     fun triggerOverlay(onEdit: () -> Unit, onSendAnyway: () -> Unit) {
-        handler.post {
-            if (::overlayManager.isInitialized) {
-                lastOverlayShownTime = System.currentTimeMillis()
-                overlayManager.show(onEdit, {}, onSendAnyway)
-            }
-        }
+        Log.d(TAG, "triggerOverlay called (silent mode active)")
+        onEdit()
     }
 
     fun triggerOverlay(onEdit: () -> Unit, onMaskAndSend: () -> Unit, onSendAnyway: () -> Unit) {
-        handler.post {
-            if (::overlayManager.isInitialized) {
-                lastOverlayShownTime = System.currentTimeMillis()
-                overlayManager.show(onEdit, onMaskAndSend, onSendAnyway)
-            }
-        }
+        Log.d(TAG, "triggerOverlay 3-arg called (silent mode active)")
+        onMaskAndSend()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
@@ -78,31 +65,13 @@ class NudgeAccessibilityService : AccessibilityService() {
                     (className.contains("Button", ignoreCase = true) && (viewId.contains("send", ignoreCase = true) || nodeText.contains("send", ignoreCase = true) || sourceText.contains("send", ignoreCase = true)))
 
                 if (isSendClick) {
-                    Log.d(TAG, "Send button clicked. Evaluating and masking input text...")
-                    extractAndEvaluateInputText(event.source)
+                    Log.d(TAG, "Send button clicked. Performing true pending hold evaluation...")
+                    extractAndEvaluateSilently(event.source, event.packageName?.toString() ?: "unknown")
                 }
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 val eventPkg = event.packageName?.toString()
-
-                if (overlayManager.isShowing) {
-                    val timeSinceShown = System.currentTimeMillis() - lastOverlayShownTime
-                    val isSystemOrKeyboard = eventPkg == null || 
-                        eventPkg == "android" || 
-                        eventPkg == "com.android.systemui" || 
-                        eventPkg.contains("inputmethod") || 
-                        eventPkg.contains("keyboard")
-                    
-                    val isSelf = eventPkg == packageName
-
-                    if (timeSinceShown >= 1000 && !isSelf && !isSystemOrKeyboard) {
-                        Log.d(TAG, "User left app for $eventPkg — clearing overlay")
-                        overlayManager.hide()
-                    }
-                }
-
-                // Incoming message node covering
                 if (eventPkg != packageName) {
                     incomingOverlayManager.scheduleTraversal(rootInActiveWindow)
                 }
@@ -124,19 +93,16 @@ class NudgeAccessibilityService : AccessibilityService() {
         super.onDestroy()
         instance = null
         incomingOverlayManager.clearAll()
-        if (::overlayManager.isInitialized && overlayManager.isShowing) {
-            overlayManager.hide()
-        }
     }
 
-    private fun extractAndEvaluateInputText(eventSource: AccessibilityNodeInfo?) {
+    private fun extractAndEvaluateSilently(eventSource: AccessibilityNodeInfo?, packageName: String) {
         val rootNode = rootInActiveWindow ?: eventSource ?: return
         val editNode = findEditableNode(rootNode)
         if (editNode != null) {
             val originalText = editNode.text?.toString()
             if (!originalText.isNullOrBlank()) {
-                Log.d(TAG, "Extracted text on send: '$originalText'")
-                evaluateAndMaskText(editNode, originalText)
+                Log.d(TAG, "Extracted text for pending hold: '$originalText'")
+                runSilentInferenceAndPolicy(editNode, originalText, packageName)
             }
             editNode.recycle()
         }
@@ -155,58 +121,94 @@ class NudgeAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun evaluateAndMaskText(editNode: AccessibilityNodeInfo, text: String) {
-        thread(name = "nudge-inference") {
-            // 1. Mask text
+    private fun runSilentInferenceAndPolicy(editNode: AccessibilityNodeInfo, text: String, packageName: String) {
+        thread(name = "silent-inference") {
+            val score = Inference.scoreText(text)
+            val policy = RiskPolicyManager.evaluate(score)
             val maskedText = Masker.mask(text)
-            val wasMasked = maskedText != text
 
-            if (wasMasked) {
-                editNode.refresh()
-                val args = Bundle().apply {
-                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, maskedText)
-                }
-                val setSuccess = editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-                if (setSuccess) {
-                    val selArgs = Bundle().apply {
-                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, maskedText.length)
-                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, maskedText.length)
+            Log.d(TAG, "Score: $score -> RiskLevel: ${policy.riskLevel}, RequiresApproval: ${policy.requiresParentApproval}")
+
+            val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
+            IncidentManager.createAndSendIncident(
+                incidentId = incidentId,
+                type = "OUTGOING",
+                message = text,
+                riskScore = score,
+                riskLevel = policy.riskLevel,
+                category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
+                packageName = packageName,
+                status = if (policy.requiresParentApproval) "PENDING" else "ALLOWED",
+                onDecisionReceived = { decision, guidance ->
+                    ParentDecisionManager.handleDecision(incidentId, decision, guidance) { result ->
+                        executeDecisionSilently(editNode, text, maskedText, result)
                     }
-                    editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, selArgs)
-                    Log.d(TAG, "Successfully wrote masked text back to input field.")
-                } else {
-                    Log.w(TAG, "ACTION_SET_TEXT failed, falling back to original text.")
+                }
+            )
+
+            if (policy.requiresParentApproval) {
+                // TRUE PENDING STATE: Hold/clear input immediately so message does NOT send directly
+                applyHoldState(editNode)
+
+                // Wait for parent decision or 60s timeout
+                PendingMessageManager.holdMessage(incidentId, policy.timeoutMillis) {
+                    ParentDecisionManager.handleTimeout(incidentId, policy.defaultTimeoutAction) { result ->
+                        executeDecisionSilently(editNode, text, maskedText, result)
+                    }
+                }
+            } else {
+                if (maskedText != text) {
+                    applyMaskedText(editNode, maskedText)
                 }
             }
+        }
+    }
 
-            // 2. Re-score masked text
-            val scoreToEvaluate = if (wasMasked) maskedText else text
-            val score = Inference.scoreText(scoreToEvaluate)
-            Log.d(TAG, "Scoring text on send -> score=$score (wasMasked=$wasMasked)")
+    private fun applyHoldState(editNode: AccessibilityNodeInfo) {
+        handler.post {
+            editNode.refresh()
+            val args = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+            }
+            editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            Log.d(TAG, "Message held in PENDING state. Input field cleared awaiting parent decision.")
+        }
+    }
 
-            if (score > RISK_THRESHOLD) {
-                handler.post {
-                    Log.d(TAG, "Risk above threshold ($RISK_THRESHOLD) - Triggering overlay")
-                    lastEvaluatedText = scoreToEvaluate
-                    lastOverlayShownTime = System.currentTimeMillis()
-                    triggerOverlay(
-                        onEdit = {
-                            Log.d(TAG, "User chose Edit")
-                        },
-                        onMaskAndSend = {
-                            Log.d(TAG, "User chose Mask & Send")
-                            evaluateAndMaskText(editNode, scoreToEvaluate)
-                        },
-                        onSendAnyway = {
-                            Log.d(TAG, "User chose Send anyway")
-                        }
-                    )
-                    EventLogger.logNudgeEvent(score, System.currentTimeMillis())
+    private fun applyMaskedText(editNode: AccessibilityNodeInfo, maskedText: String) {
+        handler.post {
+            editNode.refresh()
+            val args = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, maskedText)
+            }
+            editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        }
+    }
+
+    private fun executeDecisionSilently(
+        editNode: AccessibilityNodeInfo,
+        originalText: String,
+        maskedText: String,
+        result: ParentDecisionManager.DecisionResult
+    ) {
+        handler.post {
+            when (result) {
+                ParentDecisionManager.DecisionResult.Allow -> {
+                    Log.d(TAG, "Parent ALLOWED message. Restoring text and allowing send.")
+                    applyMaskedText(editNode, maskedText)
                 }
-            } else if (wasMasked) {
-                handler.postDelayed({
-                    Log.d(TAG, "Silent masking applied and risk <= 0.5. Proceeding to send.")
-                }, 150)
+                ParentDecisionManager.DecisionResult.Block -> {
+                    Log.d(TAG, "Parent BLOCKED message. Keeping input cleared.")
+                    editNode.refresh()
+                    val args = Bundle().apply {
+                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+                    }
+                    editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                }
+                is ParentDecisionManager.DecisionResult.Edit -> {
+                    Log.d(TAG, "Parent requested EDIT with guidance: ${result.guidance}")
+                }
+                else -> {}
             }
         }
     }

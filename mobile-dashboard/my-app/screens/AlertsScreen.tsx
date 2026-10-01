@@ -1,31 +1,40 @@
-import React from 'react';
-import { View, StyleSheet, FlatList, Text } from 'react-native';
-import AlertCard, { AlertType } from '../components/AlertCard';
-
-const alerts: AlertType[] = [
-  {
-    id: '1',
-    message: 'Potential cyberbullying detected in chat.',
-    risk: 'High',
-    timestamp: '2026-03-21 10:15',
-  },
-  {
-    id: '2',
-    message: 'Suspicious link shared.',
-    risk: 'Medium',
-    timestamp: '2026-03-20 18:42',
-  },
-];
+import React, { useEffect, useState } from 'react';
+import { View, StyleSheet, FlatList, Text, RefreshControl } from 'react-native';
+import AlertCard from '../components/AlertCard';
+import { fetchAlerts, submitDecision, type IncidentType } from '../services/alertsService';
 
 const AlertsScreen: React.FC = () => {
+  const [alerts, setAlerts] = useState<IncidentType[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadAlerts = async () => {
+    setRefreshing(true);
+    const data = await fetchAlerts();
+    setAlerts(data);
+    setRefreshing(false);
+  };
+
+  useEffect(() => {
+    loadAlerts();
+    const interval = setInterval(loadAlerts, 4000); // Poll for new incidents & status changes
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleDecision = async (incidentId: string, decision: 'ALLOW' | 'BLOCK' | 'EDIT') => {
+    await submitDecision(incidentId, decision);
+    loadAlerts();
+  };
+
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>Alerts</Text>
+      <Text style={styles.header}>Parent Alert Approvals</Text>
       <FlatList
         data={alerts}
-        keyExtractor={item => item.id}
-        renderItem={({ item }) => <AlertCard alert={item} />}
+        keyExtractor={item => item.incidentId}
+        renderItem={({ item }) => <AlertCard alert={item} onDecision={handleDecision} />}
         contentContainerStyle={styles.list}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadAlerts} />}
+        ListEmptyComponent={<Text style={styles.empty}>No safety alerts or pending incidents.</Text>}
       />
     </View>
   );
@@ -47,6 +56,12 @@ const styles = StyleSheet.create({
   list: {
     gap: 16,
     paddingBottom: 24,
+  },
+  empty: {
+    textAlign: 'center',
+    color: '#64748B',
+    marginTop: 40,
+    fontSize: 16,
   },
 });
 
