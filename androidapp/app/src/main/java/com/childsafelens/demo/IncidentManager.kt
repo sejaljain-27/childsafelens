@@ -17,11 +17,11 @@ import java.util.UUID
 
 /**
  * Manages incident creation, idempotency, local DB persistence,
- * and backend synchronization with FastAPI on port 8500 (via adb reverse).
+ * and backend synchronization with FastAPI on port 8500.
  */
 object IncidentManager {
     private const val TAG = "IncidentManager"
-    private const val BASE_URL = "http://localhost:8500" // Port 8500 via adb reverse
+    private const val BASE_URL = "http://localhost:8500"
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private var db: AppDatabase? = null
@@ -42,7 +42,7 @@ object IncidentManager {
         riskLevel: RiskPolicyManager.RiskLevel,
         category: String,
         packageName: String,
-        status: String = "PENDING",
+        status: String = "PENDING_PARENT_REVIEW",
         onDecisionReceived: (String, String?) -> Unit = { _, _ -> }
     ): String {
         val ctx = appContext ?: return incidentId
@@ -74,7 +74,7 @@ object IncidentManager {
                     Log.d(TAG, "Incident saved locally: $incidentId [parent=$parentEmail, child=$childName, status=$status]")
                     transmitToBackend(entity)
 
-                    if (status == "PENDING") {
+                    if (status == "PENDING_PARENT_REVIEW") {
                         pollForDecision(incidentId, onDecisionReceived)
                     }
                 } catch (e: Exception) {
@@ -127,7 +127,7 @@ object IncidentManager {
 
     private fun pollForDecision(incidentId: String, onDecisionReceived: (String, String?) -> Unit) {
         scope.launch(Dispatchers.IO) {
-            val maxAttempts = 30
+            val maxAttempts = 60 // poll for up to 120 seconds
             var attempts = 0
             while (attempts < maxAttempts) {
                 try {
@@ -148,8 +148,11 @@ object IncidentManager {
 
                         if (decision.isNotEmpty() && decision != "null") {
                             Log.d(TAG, "Received parent decision via poll: $decision for incident $incidentId")
-                            updateIncidentStatus(incidentId, json.optString("status", "ALLOWED"), decision)
-                            onDecisionReceived(decision, guidance)
+                            updateIncidentStatus(incidentId, json.optString("status", "ALLOWED"), decision) { success ->
+                                if (success) {
+                                    onDecisionReceived(decision, guidance)
+                                }
+                            }
                             return@launch
                         }
                     }
@@ -160,15 +163,18 @@ object IncidentManager {
         }
     }
 
-    fun updateIncidentStatus(incidentId: String, status: String, decision: String?) {
-        val database = db ?: return
+    fun updateIncidentStatus(incidentId: String, targetStatus: String, decision: String, onComplete: (Boolean) -> Unit = {}) {
+        val database = db
         scope.launch {
-            val existing = database.incidentDao().getIncident(incidentId)
-            if (existing != null) {
-                val updated = existing.copy(status = status, parentDecision = decision)
-                database.incidentDao().insert(updated)
-                Log.d(TAG, "Updated incident $incidentId status -> $status (decision=$decision)")
+            if (database != null) {
+                val existing = database.incidentDao().getIncident(incidentId)
+                if (existing != null) {
+                    val updated = existing.copy(status = targetStatus, parentDecision = decision)
+                    database.incidentDao().insert(updated)
+                    Log.d(TAG, "Status updated for $incidentId -> $targetStatus (decision=$decision)")
+                }
             }
+            onComplete(true)
         }
     }
 }

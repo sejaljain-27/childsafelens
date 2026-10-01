@@ -1,5 +1,8 @@
-# Task List - Child Waiting Overlay & Main-Thread Response Dispatch
+# Task List - Standalone Messaging App Parent BLOCK & EDIT Functionality
 
-- [ ] Update `ChatViewModel` and `SimulatorViewModel` with `pendingApprovalState` LiveData and main-thread dispatches
-- [ ] Update `ChatFragment.kt` and `DualChatFragment.kt` to show/dismiss waiting overlay
-- [ ] Verify build and test end-to-end
+- [ ] Update backend (`backend/main.py`) with BLOCK, EDIT, ALLOW, and pending decisions endpoints
+- [ ] Create `PendingMessage` entity and update database schema
+- [ ] Implement `ParentDecisionManager` methods (`handleBlock`, `handleEdit`, `handleAllow`) with atomic state transitions
+- [ ] Update `ChatViewModel` / `SimulatorViewModel` for standalone pending message holding and re-scans
+- [ ] Update React Native dashboard (`AlertCard.tsx`, `alertsService.ts`) for Allow, Block, and Edit actions
+- [ ] Verify build compilation and test workflows

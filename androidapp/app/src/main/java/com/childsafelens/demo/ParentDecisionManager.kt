@@ -3,8 +3,8 @@ package com.childsafelens.demo
 import android.util.Log
 
 /**
- * Processes parent decisions (ALLOW, BLOCK, EDIT, SHOW, HIDE, GUIDANCE)
- * and executes actions silently on the child device.
+ * Manages parent decisions (ALLOW, BLOCK, EDIT) with reliable state updates
+ * and idempotency protection.
  */
 object ParentDecisionManager {
     private const val TAG = "ParentDecisionMgr"
@@ -12,48 +12,49 @@ object ParentDecisionManager {
     sealed class DecisionResult {
         object Allow : DecisionResult()
         object Block : DecisionResult()
-        data class Edit(val guidance: String) : DecisionResult()
-        object Show : DecisionResult()
-        object Hide : DecisionResult()
-        data class Guidance(val text: String) : DecisionResult()
+        data class Edit(val guidance: String, val editedContent: String?) : DecisionResult()
         object Timeout : DecisionResult()
+    }
+
+    fun handleBlock(incidentId: String, onExecuteAction: (DecisionResult) -> Unit) {
+        IncidentManager.updateIncidentStatus(incidentId, "BLOCKED", "BLOCK") { success ->
+            Log.d(TAG, "Decision executed -> BLOCKED for incident $incidentId")
+            onExecuteAction(DecisionResult.Block)
+        }
+    }
+
+    fun handleEdit(incidentId: String, guidance: String?, editedContent: String?, onExecuteAction: (DecisionResult) -> Unit) {
+        IncidentManager.updateIncidentStatus(incidentId, "EDIT_REQUIRED", "EDIT") { success ->
+            Log.d(TAG, "Decision executed -> EDIT_REQUIRED for incident $incidentId")
+            onExecuteAction(DecisionResult.Edit(guidance ?: "Please rephrase your message before sending.", editedContent))
+        }
+    }
+
+    fun handleAllow(incidentId: String, onExecuteAction: (DecisionResult) -> Unit) {
+        IncidentManager.updateIncidentStatus(incidentId, "ALLOWED", "ALLOW") { success ->
+            Log.d(TAG, "Decision executed -> ALLOWED for incident $incidentId")
+            onExecuteAction(DecisionResult.Allow)
+        }
     }
 
     fun handleDecision(
         incidentId: String,
         decision: String,
         guidance: String? = null,
+        editedContent: String? = null,
         onExecuteAction: (DecisionResult) -> Unit
     ) {
         PendingMessageManager.cancelTimeout(incidentId)
 
-        val result = when (decision.uppercase()) {
-            "ALLOW", "SHOW" -> {
-                IncidentManager.updateIncidentStatus(incidentId, "ALLOWED", decision)
-                Log.d(TAG, "Parent decision ALLOWED for incident $incidentId")
-                DecisionResult.Allow
-            }
-            "BLOCK", "HIDE" -> {
-                IncidentManager.updateIncidentStatus(incidentId, "BLOCKED", decision)
-                Log.d(TAG, "Parent decision BLOCKED for incident $incidentId")
-                DecisionResult.Block
-            }
-            "EDIT" -> {
-                IncidentManager.updateIncidentStatus(incidentId, "EDIT", decision)
-                Log.d(TAG, "Parent decision EDIT for incident $incidentId with guidance: $guidance")
-                DecisionResult.Edit(guidance ?: "Try rephrasing this message.")
-            }
-            "GUIDANCE" -> {
-                IncidentManager.updateIncidentStatus(incidentId, "GUIDANCE", decision)
-                DecisionResult.Guidance(guidance ?: "A gentle reminder to keep chat respectful.")
-            }
+        when (decision.uppercase()) {
+            "ALLOW", "SHOW" -> handleAllow(incidentId, onExecuteAction)
+            "BLOCK", "HIDE" -> handleBlock(incidentId, onExecuteAction)
+            "EDIT" -> handleEdit(incidentId, guidance, editedContent, onExecuteAction)
             else -> {
-                Log.w(TAG, "Unknown parent decision: $decision")
-                return
+                Log.w(TAG, "Unknown decision: $decision, defaulting to ALLOW")
+                handleAllow(incidentId, onExecuteAction)
             }
         }
-
-        onExecuteAction(result)
     }
 
     fun handleTimeout(
@@ -61,18 +62,13 @@ object ParentDecisionManager {
         defaultAction: RiskPolicyManager.TimeoutAction,
         onExecuteAction: (DecisionResult) -> Unit
     ) {
-        IncidentManager.updateIncidentStatus(incidentId, "TIMEOUT", defaultAction.name)
         Log.w(TAG, "Handling timeout for incident $incidentId with policy default: $defaultAction")
-
-        val result = when (defaultAction) {
-            RiskPolicyManager.TimeoutAction.ALLOW -> DecisionResult.Allow
-            RiskPolicyManager.TimeoutAction.BLOCK -> DecisionResult.Block
+        when (defaultAction) {
+            RiskPolicyManager.TimeoutAction.ALLOW -> handleAllow(incidentId, onExecuteAction)
+            RiskPolicyManager.TimeoutAction.BLOCK -> handleBlock(incidentId, onExecuteAction)
             RiskPolicyManager.TimeoutAction.KEEP_PENDING -> {
-                Log.d(TAG, "Timeout policy is KEEP_PENDING for incident $incidentId. Continuing to wait.")
-                return
+                Log.d(TAG, "Timeout policy is KEEP_PENDING. Continuing to wait.")
             }
         }
-
-        onExecuteAction(result)
     }
 }

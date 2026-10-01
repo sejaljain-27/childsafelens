@@ -15,6 +15,7 @@ export interface IncidentType {
   status: string;
   parentDecision?: string;
   guidance?: string;
+  editedContent?: string;
 }
 
 export interface DashboardStats {
@@ -53,7 +54,7 @@ export const fetchDashboardStats = async (parentEmail?: string, childName?: stri
     const response = await fetch(url);
     const data = await response.json();
     const incidents = await fetchAlerts(parentEmail, childName);
-    const pendingCount = incidents.filter(i => i.status === 'PENDING').length;
+    const pendingCount = incidents.filter(i => i.status === 'PENDING' || i.status === 'PENDING_PARENT_REVIEW' || i.status === 'EDIT_REQUIRED').length;
     return {
       total_events: data.total_events || incidents.length,
       high_risk_count: data.high_risk_count || incidents.filter(i => i.riskLevel === 'HIGH' || i.riskLevel === 'CRITICAL').length,
@@ -67,15 +68,23 @@ export const fetchDashboardStats = async (parentEmail?: string, childName?: stri
   }
 };
 
-export const submitDecision = async (incidentId: string, decision: "ALLOW" | "BLOCK" | "EDIT", guidance?: string) => {
+export const submitDecision = async (incidentId: string, decision: "ALLOW" | "BLOCK" | "EDIT", guidance?: string, editedContent?: string) => {
+  return submitParentDecision(incidentId, decision, guidance, editedContent);
+};
+
+export const submitParentDecision = async (incidentId: string, decision: "ALLOW" | "BLOCK" | "EDIT", guidance?: string, editedContent?: string) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/incidents/${incidentId}/decision`, {
+    let endpoint = "allow";
+    if (decision === "BLOCK") endpoint = "block";
+    if (decision === "EDIT") endpoint = "edit";
+
+    const response = await fetch(`${API_BASE_URL}/parent/incidents/${incidentId}/${endpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision, guidance })
+      body: JSON.stringify({ decision, guidance, editedContent })
     });
     return await response.json();
   } catch (error) {
-    console.error("Failed to submit decision", error);
+    console.error("Failed to submit parent decision", error);
   }
 };

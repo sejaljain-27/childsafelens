@@ -10,7 +10,7 @@ interface AlertCardProps {
 
 const AlertCard: React.FC<AlertCardProps> = ({ alert, onDecision }) => {
   const isHigh = alert.riskLevel === 'HIGH' || alert.riskLevel === 'CRITICAL';
-  const isPending = alert.status === 'PENDING';
+  const isPending = alert.status === 'PENDING' || alert.status === 'PENDING_PARENT_REVIEW' || alert.status === 'EDIT_REQUIRED';
 
   return (
     <View style={[styles.card, isHigh && styles.highRiskCard]}>
@@ -30,18 +30,18 @@ const AlertCard: React.FC<AlertCardProps> = ({ alert, onDecision }) => {
       <Text style={[styles.message, isHigh && styles.highRiskMessage]}>
         "{alert.messageSnippet}"
       </Text>
-      <Text style={styles.status}>Status: {alert.status} {alert.parentDecision ? `(${alert.parentDecision})` : ''}</Text>
+      <Text style={styles.status}>Status: {alert.status} {alert.parentDecision ? `(Parent: ${alert.parentDecision})` : ''}</Text>
 
       {isPending && (
         <View style={styles.actions}>
           <TouchableOpacity style={[styles.btn, styles.allowBtn]} onPress={() => onDecision(alert.incidentId, 'ALLOW')}>
-            <Text style={styles.btnText}>Allow</Text>
+            <Text style={styles.btnText}>Allow Send</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.btn, styles.editBtn]} onPress={() => onDecision(alert.incidentId, 'EDIT')}>
-            <Text style={styles.btnText}>Edit</Text>
+            <Text style={styles.btnText}>Ask Child to Edit</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.btn, styles.blockBtn]} onPress={() => onDecision(alert.incidentId, 'BLOCK')}>
-            <Text style={styles.btnText}>Block</Text>
+            <Text style={styles.btnText}>Block Send</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -107,9 +107,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     justifyContent: 'flex-end',
+    flexWrap: 'wrap',
   },
   btn: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 8,
   },
@@ -125,7 +126,7 @@ const styles = StyleSheet.create({
   btnText: {
     color: '#FFFFFF',
     fontWeight: '600',
-    fontSize: 14,
+    fontSize: 13,
   },
 });
 

@@ -5,7 +5,12 @@ Provides endpoints for:
     - /predict: score a message for risk
     - /log-event: log a risk event
     - /events: aggregated counts
-    - /incidents: manage pending parent approval incidents (mapped by parentEmail & childName)
+    - /incidents: manage pending parent approval incidents
+    - /parent/incidents/{incidentId}/block
+    - /parent/incidents/{incidentId}/edit
+    - /parent/incidents/{incidentId}/allow
+    - /child/pending-decisions
+    - /child/messages/{messageId}/retry
     - /settings: parent default timeout policies
 """
 
@@ -67,12 +72,13 @@ class IncidentCreate(BaseModel):
     category: str
     packageName: str
     timestamp: int
-    status: str = "PENDING"
+    status: str = "PENDING_PARENT_REVIEW"
 
 
 class DecisionRequest(BaseModel):
     decision: Literal["ALLOW", "BLOCK", "EDIT", "SHOW", "HIDE", "GUIDANCE"]
     guidance: str | None = None
+    editedContent: str | None = None
 
 
 class ParentSettings(BaseModel):
@@ -103,7 +109,6 @@ def log_event(req: LogEventRequest):
 
 @app.get("/events")
 def get_events(parentEmail: str | None = None, childName: str | None = None):
-    # Filter events if needed or return aggregate
     high = sum(1 for e in _events if e["risk_level"] == "high_risk")
     medium = sum(1 for e in _events if e["risk_level"] == "medium_risk")
     low = sum(1 for e in _events if e["risk_level"] == "low_risk")
@@ -126,7 +131,8 @@ def create_incident(inc: IncidentCreate):
         "timestamp": inc.timestamp,
         "status": inc.status,
         "parentDecision": None,
-        "guidance": None
+        "guidance": None,
+        "editedContent": None
     }
     return {"status": "ok", "incidentId": inc.incidentId}
 
@@ -141,6 +147,59 @@ def get_incidents(parentEmail: str | None = None, childName: str | None = None):
     return results
 
 
+# Specific Required Parent Endpoints
+@app.post("/parent/incidents/{incident_id}/block")
+def parent_block(incident_id: str):
+    if incident_id not in _incidents:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    inc = _incidents[incident_id]
+    if inc["status"] != "PENDING_PARENT_REVIEW":
+        return {"messageId": incident_id, "decision": "BLOCK", "status": inc["status"]}
+
+    inc["parentDecision"] = "BLOCK"
+    inc["status"] = "BLOCKED"
+    return {"messageId": incident_id, "decision": "BLOCK", "status": "BLOCKED"}
+
+
+@app.post("/parent/incidents/{incident_id}/edit")
+def parent_edit(incident_id: str, req: DecisionRequest):
+    if incident_id not in _incidents:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    inc = _incidents[incident_id]
+    inc["parentDecision"] = "EDIT"
+    inc["guidance"] = req.guidance or "Please rephrase your message before sending."
+    inc["editedContent"] = req.editedContent
+    inc["status"] = "EDIT_REQUIRED"
+    return {
+        "messageId": incident_id,
+        "decision": "EDIT",
+        "status": "EDIT_REQUIRED",
+        "editedContent": req.editedContent,
+        "askChildToEdit": req.editedContent is None
+    }
+
+
+@app.post("/parent/incidents/{incident_id}/allow")
+def parent_allow(incident_id: str):
+    if incident_id not in _incidents:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    inc = _incidents[incident_id]
+    inc["parentDecision"] = "ALLOW"
+    inc["status"] = "ALLOWED"
+    return {"messageId": incident_id, "decision": "ALLOW", "status": "ALLOWED"}
+
+
+@app.get("/child/pending-decisions")
+def child_pending_decisions():
+    return [i for i in _incidents.values() if i["status"] in ["PENDING_PARENT_REVIEW", "EDIT_REQUIRED"]]
+
+
+@app.post("/child/messages/{message_id}/retry")
+def child_message_retry(message_id: str):
+    return {"status": "ok", "messageId": message_id, "retried": True}
+
+
+# Generic decision fallback
 @app.post("/incidents/{incident_id}/decision")
 def submit_decision(incident_id: str, req: DecisionRequest):
     if incident_id not in _incidents:
@@ -149,7 +208,13 @@ def submit_decision(incident_id: str, req: DecisionRequest):
     inc = _incidents[incident_id]
     inc["parentDecision"] = req.decision
     inc["guidance"] = req.guidance
-    inc["status"] = "ALLOWED" if req.decision in ["ALLOW", "SHOW"] else ("BLOCKED" if req.decision in ["BLOCK", "HIDE"] else "EDIT")
+    inc["editedContent"] = req.editedContent
+    if req.decision in ["ALLOW", "SHOW"]:
+        inc["status"] = "ALLOWED"
+    elif req.decision in ["BLOCK", "HIDE"]:
+        inc["status"] = "BLOCKED"
+    else:
+        inc["status"] = "EDIT_REQUIRED"
     return {"status": "ok", "incidentId": incident_id, "status_updated": inc["status"]}
 
 
@@ -162,7 +227,8 @@ def get_decision(incident_id: str):
         "incidentId": inc["incidentId"],
         "status": inc["status"],
         "parentDecision": inc["parentDecision"],
-        "guidance": inc["guidance"]
+        "guidance": inc["guidance"],
+        "editedContent": inc["editedContent"]
     }
 
 

@@ -184,13 +184,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             riskLevel = policy.riskLevel,
             category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
             packageName = "com.childsafelens.demo",
-            status = if (policy.requiresParentApproval) "PENDING" else "ALLOWED",
-            onDecisionReceived = { decision, _ ->
+            status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
+            onDecisionReceived = { decision, guidance ->
                 _pendingApprovalState.postValue(false)
-                if (decision.uppercase() in listOf("ALLOW", "SHOW")) {
-                    // Update message display text to filtered text upon approval
-                    viewModelScope.launch(Dispatchers.Main) {
+                val upperDecision = decision.uppercase()
+                viewModelScope.launch(Dispatchers.Main) {
+                    if (upperDecision in listOf("ALLOW", "SHOW")) {
                         updateMessageDisplay(msg.id, filteredText)
+                    } else if (upperDecision in listOf("BLOCK", "HIDE")) {
+                        updateMessageDisplay(msg.id, "[Message Blocked]")
+                    } else if (upperDecision == "EDIT") {
+                        updateMessageDisplay(msg.id, "[Edit Required: ${guidance ?: "Please rephrase"}]")
                     }
                 }
             }
@@ -229,12 +233,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             riskLevel = policy.riskLevel,
             category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
             packageName = "com.childsafelens.demo",
-            status = if (policy.requiresParentApproval) "PENDING" else "ALLOWED",
-            onDecisionReceived = { decision, _ ->
+            status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
+            onDecisionReceived = { decision, guidance ->
                 _pendingApprovalState.postValue(false)
-                if (decision.uppercase() in listOf("ALLOW", "SHOW")) {
-                    viewModelScope.launch(Dispatchers.Main) {
+                val upperDecision = decision.uppercase()
+                viewModelScope.launch(Dispatchers.Main) {
+                    if (upperDecision in listOf("ALLOW", "SHOW")) {
                         updateMessageDisplay(msg.id, filteredText)
+                    } else if (upperDecision in listOf("BLOCK", "HIDE")) {
+                        updateMessageDisplay(msg.id, "[Message Blocked]")
+                    } else if (upperDecision == "EDIT") {
+                        updateMessageDisplay(msg.id, "[Edit Required: ${guidance ?: "Please rephrase"}]")
                     }
                 }
             }
@@ -325,12 +334,17 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             riskLevel = policy.riskLevel,
             category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
             packageName = "com.childsafelens.demo",
-            status = if (policy.requiresParentApproval) "PENDING" else "ALLOWED",
-            onDecisionReceived = { decision, _ ->
+            status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
+            onDecisionReceived = { decision, guidance ->
                 _pendingApprovalState.postValue(false)
-                if (decision.uppercase() in listOf("ALLOW", "SHOW")) {
-                    viewModelScope.launch(Dispatchers.Main) {
+                val upperDecision = decision.uppercase()
+                viewModelScope.launch(Dispatchers.Main) {
+                    if (upperDecision in listOf("ALLOW", "SHOW")) {
                         updateMessageDisplay(msg.id, filteredText)
+                    } else if (upperDecision in listOf("BLOCK", "HIDE")) {
+                        updateMessageDisplay(msg.id, "[Message Blocked]")
+                    } else if (upperDecision == "EDIT") {
+                        updateMessageDisplay(msg.id, "[Edit Required: ${guidance ?: "Please rephrase"}]")
                     }
                 }
             }
@@ -370,12 +384,17 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             riskLevel = policy.riskLevel,
             category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
             packageName = "com.childsafelens.demo",
-            status = if (policy.requiresParentApproval) "PENDING" else "ALLOWED",
-            onDecisionReceived = { decision, _ ->
+            status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
+            onDecisionReceived = { decision, guidance ->
                 _pendingApprovalState.postValue(false)
-                if (decision.uppercase() in listOf("ALLOW", "SHOW")) {
-                    viewModelScope.launch(Dispatchers.Main) {
+                val upperDecision = decision.uppercase()
+                viewModelScope.launch(Dispatchers.Main) {
+                    if (upperDecision in listOf("ALLOW", "SHOW")) {
                         updateMessageDisplay(msg.id, filteredText)
+                    } else if (upperDecision in listOf("BLOCK", "HIDE")) {
+                        updateMessageDisplay(msg.id, "[Message Blocked]")
+                    } else if (upperDecision == "EDIT") {
+                        updateMessageDisplay(msg.id, "[Edit Required: ${guidance ?: "Please rephrase"}]")
                     }
                 }
             }
