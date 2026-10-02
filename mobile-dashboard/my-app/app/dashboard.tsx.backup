@@ -1,0 +1,324 @@
+import React, { useEffect, useState } from 'react';
+import {
+  View,
+  StyleSheet,
+  Text,
+  ScrollView,
+  SafeAreaView,
+  TouchableOpacity,
+  RefreshControl,
+} from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { MaterialIcons } from '@expo/vector-icons';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { LinearGradient } from 'expo-linear-gradient';
+
+import AlertCard from '../components/AlertCard';
+import PrimaryButton from '../components/PrimaryButton';
+import { Component as GradientBackground } from '../components/ui/gradient-backgrounds';
+import { fetchAlerts, fetchDashboardStats, submitDecision, type IncidentType, type DashboardStats } from '../services/alertsService';
+
+const DashboardScreen: React.FC = () => {
+  const router = useRouter();
+  const params = useLocalSearchParams();
+
+  const getStoredEmail = () => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('childsafelens_parent_email');
+    }
+    return null;
+  };
+
+  const [parentEmail, setParentEmail] = useState<string>(
+    (params.email as string) || getStoredEmail() || 'parent@test.com'
+  );
+  const [selectedChild, setSelectedChild] = useState<'Aarav' | 'Kiara'>('Aarav');
+  const [stats, setStats] = useState<DashboardStats>({
+    total_events: 0,
+    high_risk_count: 0,
+    medium_risk_count: 0,
+    low_risk_count: 0,
+    pending_count: 0,
+  });
+  const [outgoingIncidents, setOutgoingIncidents] = useState<IncidentType[]>([]);
+  const [incomingIncidents, setIncomingIncidents] = useState<IncidentType[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadData = async () => {
+    setRefreshing(true);
+    const [dashboardStats, allIncidents] = await Promise.all([
+      fetchDashboardStats(parentEmail, selectedChild),
+      fetchAlerts(parentEmail, selectedChild)
+    ]);
+    setStats(dashboardStats);
+
+    // Filter for High and Critical risk only
+    const highCritical = allIncidents.filter(i => i.riskLevel === 'HIGH' || i.riskLevel === 'CRITICAL');
+
+    setOutgoingIncidents(highCritical.filter(i => i.type?.toUpperCase() === 'OUTGOING'));
+    setIncomingIncidents(highCritical.filter(i => i.type?.toUpperCase() === 'INCOMING'));
+    setRefreshing(false);
+  };
+
+  useEffect(() => {
+    loadData();
+    const interval = setInterval(loadData, 4000);
+    return () => clearInterval(interval);
+  }, [parentEmail, selectedChild]);
+
+  const handleDecision = async (incidentId: string, decision: 'ALLOW' | 'BLOCK' | 'EDIT') => {
+    await submitDecision(incidentId, decision);
+    loadData();
+  };
+
+  const handleLogout = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('childsafelens_parent_email');
+    }
+    router.replace('/');
+  };
+
+  return (
+    <GradientBackground>
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="dark" />
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadData} />}
+        >
+          {/* Header */}
+          <View style={styles.header}>
+            <View style={styles.logoRow}>
+              <MaterialIcons name="security" size={28} color="#2F80ED" />
+              <Text style={styles.appName}>ChildSafeLens</Text>
+            </View>
+            <View style={styles.headerRight}>
+              <TouchableOpacity style={styles.iconButton} onPress={() => router.push('/settings')} activeOpacity={0.7}>
+                <MaterialIcons name="settings" size={24} color="#475569" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.iconButton} onPress={handleLogout} activeOpacity={0.7}>
+                <MaterialIcons name="logout" size={24} color="#EF4444" />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Mapped Account Info */}
+          <View style={styles.mappedInfoBox}>
+            <Text style={styles.mappedText}>Logged in as: <Text style={styles.boldText}>{parentEmail}</Text></Text>
+          </View>
+
+          {/* Children Selector & Summary Metrics */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Connected Child Profile</Text>
+            <View style={styles.childTabsRow}>
+              <TouchableOpacity
+                style={[styles.childTab, selectedChild === 'Aarav' && styles.activeChildTab]}
+                onPress={() => setSelectedChild('Aarav')}
+              >
+                <Text style={[styles.childTabText, selectedChild === 'Aarav' && styles.activeChildTabText]}>Aarav (12 yrs)</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.childTab, selectedChild === 'Kiara' && styles.activeChildTab]}
+                onPress={() => setSelectedChild('Kiara')}
+              >
+                <Text style={[styles.childTabText, selectedChild === 'Kiara' && styles.activeChildTabText]}>Kiara (10 yrs)</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Metric Cards (High & Critical Risk focus) */}
+            <View style={styles.metricsGrid}>
+              <View style={[styles.metricCard, { backgroundColor: 'rgba(255, 193, 7, 0.9)' }]}>
+                <Text style={[styles.metricNumber, { color: '#FFFFFF' }]}>{stats.pending_count}</Text>
+                <Text style={styles.metricLabel}>Pending</Text>
+              </View>
+              <View style={[styles.metricCard, { backgroundColor: 'rgba(244, 67, 54, 0.9)' }]}>
+                <Text style={[styles.metricNumber, { color: '#FFFFFF' }]}>{stats.high_risk_count}</Text>
+                <Text style={styles.metricLabel}>High Risk</Text>
+              </View>
+              <View style={[styles.metricCard, { backgroundColor: 'rgba(3, 169, 244, 0.9)' }]}>
+                <Text style={[styles.metricNumber, { color: '#FFFFFF' }]}>{stats.total_events}</Text>
+                <Text style={styles.metricLabel}>Total</Text>
+              </View>
+            </View>
+          </View>
+
+          {/* OUTGOING MESSAGES SECTION */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>📤 Outgoing Messages (High / Critical Risk)</Text>
+            {outgoingIncidents.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Text style={styles.emptyText}>No high-risk outgoing alerts for {selectedChild}.</Text>
+              </View>
+            ) : (
+              outgoingIncidents.map((incident) => (
+                <AlertCard key={incident.incidentId} alert={incident} onDecision={handleDecision} />
+              ))
+            )}
+          </View>
+
+          {/* INCOMING MESSAGES SECTION */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>📥 Incoming Messages (High / Critical Risk)</Text>
+            {incomingIncidents.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Text style={styles.emptyText}>No high-risk incoming alerts for {selectedChild}.</Text>
+              </View>
+            ) : (
+              incomingIncidents.map((incident) => (
+                <AlertCard key={incident.incidentId} alert={incident} onDecision={handleDecision} />
+              ))
+            )}
+          </View>
+
+          {/* Quick Actions */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Quick Actions</Text>
+            <View style={styles.actionGrid}>
+              <PrimaryButton
+                title="Scan / Refresh"
+                onPress={() => loadData()}
+                variant="outline"
+                icon="qr-code-scanner"
+                style={styles.actionButton}
+              />
+              <PrimaryButton
+                title="Settings & Defaults"
+                onPress={() => router.push('/settings')}
+                variant="outline"
+                icon="settings"
+                style={styles.actionButton}
+              />
+            </View>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </GradientBackground>
+  );
+};
+
+const styles = StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: 'transparent' },
+  scrollContent: { padding: 24, paddingTop: 12 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  logoRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  appName: { fontSize: 22, fontWeight: '800', color: '#0277BD', letterSpacing: -0.5 },
+  headerRight: { flexDirection: 'row', gap: 8 },
+  iconButton: { 
+    width: 40, 
+    height: 40, 
+    borderRadius: 20, 
+    backgroundColor: 'rgba(255, 255, 255, 0.9)', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    shadowColor: '#000', 
+    shadowOpacity: 0.1, 
+    shadowRadius: 10, 
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)'
+  },
+  mappedInfoBox: { 
+    backgroundColor: 'rgba(255, 255, 255, 0.85)', 
+    padding: 12, 
+    borderRadius: 16, 
+    marginBottom: 16, 
+    borderWidth: 2, 
+    borderColor: 'rgba(2, 119, 189, 0.2)',
+    shadowColor: '#0277BD',
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 2
+  },
+  mappedText: { fontSize: 14, color: '#01579B', fontWeight: '500' },
+  boldText: { fontWeight: '800', color: '#0277BD' },
+  section: { marginBottom: 24 },
+  sectionTitle: { 
+    fontSize: 18, 
+    fontWeight: '800', 
+    color: '#01579B', 
+    marginBottom: 12,
+    textShadowColor: 'rgba(255, 255, 255, 0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2
+  },
+  childTabsRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
+  childTab: { 
+    paddingHorizontal: 20, 
+    paddingVertical: 10, 
+    borderRadius: 25, 
+    backgroundColor: 'rgba(255, 255, 255, 0.75)',
+    borderWidth: 2,
+    borderColor: 'rgba(2, 119, 189, 0.2)',
+    shadowColor: '#0277BD',
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2
+  },
+  activeChildTab: { 
+    backgroundColor: '#0288D1',
+    borderColor: '#0277BD',
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 4
+  },
+  childTabText: { fontSize: 14, fontWeight: '700', color: '#0277BD' },
+  activeChildTabText: { color: '#FFFFFF' },
+  metricsGrid: { flexDirection: 'row', gap: 10 },
+  metricCard: { 
+    flex: 1, 
+    borderRadius: 20, 
+    padding: 16, 
+    alignItems: 'center', 
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.4)',
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4
+  },
+  metricNumber: { fontSize: 28, fontWeight: '900', marginBottom: 4 },
+  metricLabel: { 
+    fontSize: 11, 
+    fontWeight: '700', 
+    color: '#ffffff', 
+    textAlign: 'center',
+    letterSpacing: 0.5
+  },
+  emptyCard: { 
+    backgroundColor: 'rgba(255, 255, 255, 0.85)', 
+    borderRadius: 20, 
+    padding: 20, 
+    alignItems: 'center', 
+    borderWidth: 2, 
+    borderColor: 'rgba(2, 119, 189, 0.2)',
+    shadowColor: '#0277BD',
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 2
+  },
+  emptyText: { 
+    textAlign: 'center', 
+    color: '#0277BD', 
+    fontSize: 14,
+    fontWeight: '600'
+  },
+  actionGrid: { flexDirection: 'row', gap: 12, marginTop: 8 },
+  actionButton: { 
+    flex: 1, 
+    height: 90, 
+    flexDirection: 'column', 
+    paddingHorizontal: 0, 
+    borderRadius: 20, 
+    backgroundColor: 'rgba(255, 255, 255, 0.9)', 
+    borderWidth: 2, 
+    borderColor: 'rgba(2, 119, 189, 0.2)',
+    shadowColor: '#0277BD', 
+    shadowOpacity: 0.15, 
+    shadowRadius: 10, 
+    elevation: 4 
+  },
+});
+
+export default DashboardScreen;

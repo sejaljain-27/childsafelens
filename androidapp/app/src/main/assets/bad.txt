@@ -1,0 +1,475 @@
+# =====================================================================
+# CYBERBULLYING / ABUSIVE WORD LIST  (English + Hinglish/Hindi/Marathi-Hinglish)
+#
+# FORMAT
+#   - lines starting with '#' are comments; blank lines are ignored
+#   - ONE entry per line, lowercase
+#   - single word  -> matched as a whole word (never as a substring)
+#   - contains a space -> treated as a PHRASE (see [PHRASES] section)
+#   - do NOT add leet/obfuscated variants (f@ck, id1ot, fuuuck) - the app
+#     normalizes text (digits/symbols -> letters, 3+ repeated letters shortened)
+#   - do NOT add ordinary words that are only sometimes abusive
+#     (e.g. gay, haram, chod/chhod = 'leave', sale, land, lore, rand)
+#
+# SOURCES: BullyExplain.xlsx (code-mixed bully tweets), Indo-HateSpeech
+#          dataset (HS1 comments), Hinglish_Profanity_List.csv, plus manual
+#          additions. Words were mined by how strongly they occur in
+#          bully/hate text vs. neutral text, then hand-curated.
+# =====================================================================
+
+# ----- HINGLISH / HINDI - SEXUAL & FAMILY ABUSE -----
+baapchu
+bachachod
+bachchechod
+bachichod
+backchodi
+bahanchod
+bahencho
+bahenchod
+bahenke
+balchod
+bancho
+bc
+behenchod
+behenchodo
+behnchod
+benchod
+betichod
+bhadvya
+bhagatchod
+bhaichod
+bhanchod
+bhdwa
+bhenchod
+bhenchodh
+bhenke
+bhenkelode
+bhenkelodey
+bhnchod
+bhonsdiwala
+bhonsriwala
+bhosad
+bhosada
+bhosadchod
+bhosadi
+bhosadike
+bhosda
+bhosde
+bhosdi
+bhosdika
+bhosdike
+bhosdiwala
+bhosdiwale
+bhosra
+bhosri
+biwichod
+bkc
+bkl
+boobs
+bosda
+bosdike
+bsdk
+bsdka
+bsdke
+bumchod
+chinaal
+chinal
+chodela
+chodhu
+chodhunga
+chodoonga
+chodra
+chodu
+chodunga
+chooche
+choochi
+choot
+chotiya
+chuchi
+chuchiya
+chud
+chuda
+chudai
+chudaikhana
+chudail
+chudane
+chudegi
+chudti
+chudwa
+chudwane
+chudwati
+chudwaya
+chut
+chutad
+chuthiya
+chutia
+chutiy
+chutiya
+chutiyaa
+chutiyapa
+chutiye
+chutiyo
+chutiyon
+chutiyu
+chutya
+chutye
+fakeerchod
+fudda
+fuddi
+gaand
+gaandfat
+gaandmarau
+gaandmasti
+gaandu
+gand
+gandkate
+gandmarau
+gandu
+gashti
+ghasti
+jhaant
+jhaat
+jhant
+jhanten
+jhantu
+jhatu
+kanjar
+kanjari
+kanjri
+khandanchod
+lauda
+laude
+laudi
+laure
+lavander
+lavda
+lavde
+lavdya
+lawda
+lawde
+loda
+lode
+lodey
+lodi
+lodu
+loray
+louda
+loude
+lowda
+lowde
+lun
+lund
+lundoos
+lvde
+maacho
+maadarchod
+maadherchod
+machod
+machudane
+machudi
+madarch
+madarchod
+madarchodh
+madarchodo
+madarchot
+maderchod
+madharchod
+madrachod
+madrchod
+makhanchudai
+mc
+mkc
+motherchod
+muth
+mutthal
+parichod
+patichod
+phuda
+phudda
+phuddi
+phudi
+raand
+raatchuda
+rakhail
+randi
+randichya
+randikhana
+randwa
+rendi
+suhaagchudai
+tatti
+tits
+titties
+titty
+zavadya
+zavnya
+
+# ----- HINGLISH / HINDI - INSULTS & ANIMAL ABUSE -----
+badir
+badirchand
+bakchod
+bakchodi
+bakland
+bevakoof
+bevkuf
+bewakoof
+bewakuf
+bewkoof
+bewkuf
+bhadva
+bhadve
+bhadwa
+bhadwe
+bhadwi
+bhandwe
+bharwe
+chakka
+chapri
+chhakka
+dhakkan
+dogle
+gadha
+gadhe
+gandpaidaish
+gawaar
+gawar
+gendu
+ghatiya
+haraami
+harami
+haramjada
+haramkhor
+haramzaada
+haramzada
+haramzade
+haramzadi
+hijada
+hijade
+hijda
+hijde
+hijre
+hinjda
+hinjde
+hizde
+hizra
+kamina
+kamine
+kaminey
+kamini
+kamino
+kuta
+kutiya
+kutta
+kutte
+kuttey
+kutti
+kuttiya
+kutton
+kutty
+najayaj
+najayaz
+nalayak
+nalayk
+namard
+napunsak
+nikamma
+nikammi
+paidaishikeeda
+saala
+saale
+saalo
+sala
+sooar
+soover
+soower
+suar
+suaro
+suvar
+suwar
+ullu
+vahiyaat
+
+# ----- HINGLISH / HINDI - RELIGION, CASTE, RACE SLURS -----
+bhangi
+chamar
+chuslam
+chuslim
+kaalu
+kalua
+katua
+katue
+katuwa
+katve
+katwa
+momedankatue
+mullekatue
+mullekebaal
+mullikatui
+mullo
+neech
+paki
+
+# ----- ENGLISH - PROFANITY & SEXUAL ABUSE -----
+arsehole
+asshat
+asshole
+assholes
+bastard
+bastards
+bimbo
+bitch
+bitches
+bitchy
+blowjob
+bollocks
+bullshit
+cock
+cocksucker
+cumshot
+cunt
+cunts
+dick
+dickhead
+dickheads
+dipshit
+douche
+douchebag
+dumbass
+fatass
+fack
+fck
+fcuk
+fuck
+fucked
+fucker
+fuckers
+fuckface
+fuckin
+fucking
+fuckoff
+fuckwit
+fuk
+fukk
+fuq
+gtfo
+handjob
+hooker
+horny
+horseshit
+jackass
+jerkoff
+kys
+mfer
+mofo
+motherfucker
+motherfuckers
+prick
+pussies
+pussy
+shit
+shite
+shitface
+shithead
+shitty
+skank
+slut
+sluts
+slutty
+stfu
+thot
+tosser
+twat
+wanker
+whore
+whores
+
+# ----- ENGLISH - SLURS -----
+beaner
+chink
+coon
+dyke
+fag
+faggot
+faggots
+fags
+gook
+homo
+kike
+lesbo
+libtard
+mongoloid
+negro
+nigga
+niggas
+nigger
+niggers
+raghead
+retard
+retarded
+retards
+shemale
+spastic
+spic
+spick
+towelhead
+tranny
+wetback
+
+# ----- ENGLISH - INSULTS & BODY SHAMING (mild; delete any you find too aggressive) -----
+dirtbag
+dumb
+dumbo
+fatso
+freak
+freaks
+idiot
+idiotic
+idiots
+imbecile
+loser
+losers
+lowlife
+moron
+morons
+pathetic
+scumbag
+stupid
+trash
+ugly
+weirdo
+worthless
+
+# ----- [PHRASES] multi-word entries (mask the whole phrase) -----
+kill yourself
+go kill yourself
+go die
+go and die
+hang yourself
+drop dead
+you should die
+i hope you die
+nobody likes you
+no one likes you
+nobody loves you
+everyone hates you
+i hate you
+you are ugly
+you are fat
+you are worthless
+you are a loser
+shut up
+go to hell
+rape you
+kill you
+beat you up
+send nudes
+teri maa ki
+teri teri maa ko
+teri behan ki
+teri behen ki
+maa ki aankh
+maa chod
+tu mar ja
+mar ja
+jaake mar
+pagal

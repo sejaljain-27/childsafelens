@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">ChildSafeLens Demo</string>
+    <string name="hint_type_message">Type a message…</string>
+    <string name="btn_send">Send</string>
+    <string name="btn_enable_service">Enable Accessibility Service</string>
+    <string name="btn_grant_overlay">Grant Overlay Permission</string>
+    <string name="nudge_title">Wait a second</string>
+    <string name="nudge_message">This message might come across as hurtful. Send anyway, or edit it?</string>
+    <string name="btn_edit">Edit</string>
+    <string name="btn_send_anyway">Send anyway</string>
+</resources>
