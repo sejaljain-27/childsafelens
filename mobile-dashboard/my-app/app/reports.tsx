@@ -10,7 +10,7 @@ const isSmallScreen = SCREEN_WIDTH < 380;
 const isMediumScreen = SCREEN_WIDTH >= 380 && SCREEN_WIDTH < 768;
 const isLargeScreen = SCREEN_WIDTH >= 768;
 
-const API_BASE_URL = "http://localhost:8500";
+const API_BASE_URL = "http://10.46.19.193:8001";
 
 interface AnalyticsData {
   total_incidents: number;

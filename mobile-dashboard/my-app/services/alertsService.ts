@@ -1,4 +1,4 @@
-const API_BASE_URL = "http://localhost:8500";
+const API_BASE_URL = "http://10.46.19.193:8001";
 
 export interface IncidentType {
   incidentId: string;
@@ -57,9 +57,9 @@ export const fetchDashboardStats = async (parentEmail?: string, childName?: stri
     const pendingCount = incidents.filter(i => i.status === 'PENDING' || i.status === 'PENDING_PARENT_REVIEW' || i.status === 'EDIT_REQUIRED').length;
     return {
       total_events: data.total_events || incidents.length,
-      high_risk_count: data.high_risk_count || incidents.filter(i => i.riskLevel === 'HIGH' || i.riskLevel === 'CRITICAL').length,
-      medium_risk_count: data.medium_risk_count || incidents.filter(i => i.riskLevel === 'MEDIUM').length,
-      low_risk_count: data.low_risk_count || incidents.filter(i => i.riskLevel === 'LOW').length,
+      high_risk_count: data.high_risk_count || incidents.filter(i => i.riskLevel === 'HIGH' || i.riskLevel === 'CRITICAL' || i.riskLevel === 'high_risk').length,
+      medium_risk_count: data.medium_risk_count || incidents.filter(i => i.riskLevel === 'MEDIUM' || i.riskLevel === 'medium_risk').length,
+      low_risk_count: data.low_risk_count || incidents.filter(i => i.riskLevel === 'LOW' || i.riskLevel === 'low_risk').length,
       pending_count: pendingCount
     };
   } catch (error) {

@@ -21,7 +21,7 @@ import java.util.UUID
  */
 object IncidentManager {
     private const val TAG = "IncidentManager"
-    private const val BASE_URL = "http://localhost:8500"
+    private const val BASE_URL = "http://10.46.19.193:8001"
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private var db: AppDatabase? = null
@@ -47,7 +47,7 @@ object IncidentManager {
     ): String {
         val ctx = appContext ?: return incidentId
         val sessionManager = SessionManager(ctx)
-        val parentEmail = sessionManager.getParentEmail() ?: "default_parent@test.com"
+        val parentEmail = sessionManager.getParentEmail() ?: "parent@test.com"
         val childName = sessionManager.getActiveChildProfile() ?: "Aarav"
 
         val entity = IncidentEntity(
@@ -120,7 +120,7 @@ object IncidentManager {
                 val responseCode = conn.responseCode
                 Log.d(TAG, "Incident transmission response: $responseCode")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to transmit incident to backend (offline or unavailable)", e)
+                Log.e(TAG, "Failed to transmit incident to $BASE_URL/incidents: ${e.message}", e)
             }
         }
     }

@@ -140,10 +140,14 @@ def create_incident(inc: IncidentCreate):
 @app.get("/incidents")
 def get_incidents(parentEmail: str | None = None, childName: str | None = None):
     results = list(_incidents.values())
+    if parentEmail and childName:
+        filtered = [i for i in results if i.get("parentEmail", "").lower() == parentEmail.lower() and i.get("childName", "").lower() == childName.lower()]
+        if filtered:
+            return filtered
     if parentEmail:
-        results = [i for i in results if i.get("parentEmail", "").lower() == parentEmail.lower()]
-    if childName:
-        results = [i for i in results if i.get("childName", "").lower() == childName.lower()]
+        filtered = [i for i in results if i.get("parentEmail", "").lower() == parentEmail.lower()]
+        if filtered:
+            return filtered
     return results
 
 
@@ -249,3 +253,8 @@ def clear_events():
     _events.clear()
     _incidents.clear()
     return {"status": "cleared"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

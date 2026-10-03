@@ -5,7 +5,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 
-const API_BASE_URL = "http://localhost:8500";
+const API_BASE_URL = "http://10.46.19.193:8001";
 
 export default function SettingsScreen() {
   const router = useRouter();

@@ -50,11 +50,17 @@ const DashboardScreen: React.FC = () => {
     ]);
     setStats(dashboardStats);
 
-    // Filter for High and Critical risk only
-    const highCritical = allIncidents.filter(i => i.riskLevel === 'HIGH' || i.riskLevel === 'CRITICAL');
+    // Filter for High, Critical risk or pending parent review
+    const filtered = allIncidents.filter(i =>
+      i.riskLevel === 'HIGH' ||
+      i.riskLevel === 'CRITICAL' ||
+      i.riskLevel === 'high_risk' ||
+      i.status === 'PENDING_PARENT_REVIEW' ||
+      i.status === 'EDIT_REQUIRED'
+    );
 
-    setOutgoingIncidents(highCritical.filter(i => i.type?.toUpperCase() === 'OUTGOING'));
-    setIncomingIncidents(highCritical.filter(i => i.type?.toUpperCase() === 'INCOMING'));
+    setOutgoingIncidents(filtered.filter(i => (i.type?.toUpperCase() === 'OUTGOING') || !i.type));
+    setIncomingIncidents(filtered.filter(i => i.type?.toUpperCase() === 'INCOMING'));
     setRefreshing(false);
   };
 
