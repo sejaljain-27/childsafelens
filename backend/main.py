@@ -15,14 +15,16 @@ Provides endpoints for:
 """
 
 import uuid
+import os
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from model import score_text
+from notification_service import notification_service, NotificationPreferences
 
 app = FastAPI(title="ChildSafeLens Demo API")
 
@@ -123,7 +125,7 @@ def get_events(parentEmail: str | None = None, childName: str | None = None):
 
 @app.post("/incidents")
 def create_incident(inc: IncidentCreate):
-    _incidents[inc.incidentId] = {
+    incident_data = {
         "incidentId": inc.incidentId,
         "parentEmail": inc.parentEmail,
         "childId": inc.childId,
@@ -140,6 +142,12 @@ def create_incident(inc: IncidentCreate):
         "guidance": None,
         "editedContent": None
     }
+    _incidents[inc.incidentId] = incident_data
+
+    # Asynchronously dispatch notifications without blocking incident creation
+    import threading
+    threading.Thread(target=notification_service.notify_parent, args=(incident_data,)).start()
+
     return {"status": "ok", "incidentId": inc.incidentId}
 
 
@@ -151,6 +159,21 @@ def get_incidents(parentEmail: str | None = None, childName: str | None = None):
     if childName:
         results = [i for i in results if i.get("childName", "").lower() == childName.lower()]
     return results
+
+
+@app.get("/settings/notifications", response_model=NotificationPreferences)
+def get_notification_settings(parentEmail: str = "parent@test.com"):
+    return notification_service.get_preferences(parentEmail)
+
+
+@app.post("/settings/notifications", response_model=NotificationPreferences)
+def update_notification_settings(prefs: NotificationPreferences):
+    return notification_service.update_preferences(prefs)
+
+
+@app.get("/notification-logs")
+def get_notification_logs(incidentId: str | None = None, parentEmail: str | None = None):
+    return notification_service.get_logs(incidentId, parentEmail)
 
 
 # Specific Required Parent Endpoints
@@ -248,6 +271,80 @@ def update_settings(settings: ParentSettings):
     global _parent_settings
     _parent_settings = settings.dict()
     return {"status": "ok", "settings": _parent_settings}
+
+
+class AlertRequest(BaseModel):
+    deviceId: str
+    type: str
+    appPackage: str
+    score: float
+    timestamp: int
+    parentEmail: str
+    parentPhone: str
+    emailEnabled: bool = True
+    smsEnabled: bool = True
+
+
+@app.post("/alerts")
+def post_alert(req: AlertRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+    expected_api_key = os.environ.get("API_KEY", "secret_child_safe_lens_key_2026")
+    if x_api_key != expected_api_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
+
+    package_map = {
+        "com.whatsapp": "WhatsApp",
+        "com.instagram.android": "Instagram",
+        "com.google.android.gm": "Gmail",
+        "com.childsafelens.demo": "ChildSafeLens Demo"
+    }
+    app_name = package_map.get(req.appPackage, req.appPackage.split('.')[-1].capitalize())
+
+    if req.type == "OUTGOING_SENT_ANYWAY":
+        msg_text = f"Your child sent a message on {app_name} that was flagged as potentially hurtful."
+    elif req.type == "INCOMING_BULLYING":
+        msg_text = f"Your child may have received a harmful message on {app_name}."
+    else:
+        msg_text = f"Safety alert regarding activity on {app_name}."
+
+    success_count = 0
+    errors = []
+
+    if req.emailEnabled and req.parentEmail:
+        try:
+            subject = f"[ChildSafeLens] Safety Alert — {app_name}"
+            html_body = f"""
+            <html>
+            <body>
+                <h2>ChildSafeLens Alert</h2>
+                <p>{msg_text}</p>
+                <ul>
+                    <li><b>App:</b> {app_name}</li>
+                    <li><b>Severity Score:</b> {req.score:.2f}</li>
+                    <li><b>Time:</b> {datetime.fromtimestamp(req.timestamp / 1000.0, timezone.utc).strftime('%d %b %Y, %I:%M %p')} UTC</li>
+                </ul>
+                <p>Please open the Parent Dashboard to review.</p>
+            </body>
+            </html>
+            """
+            notification_service.email_provider.send_email(req.parentEmail, subject, html_body)
+            success_count += 1
+        except Exception as e:
+            errors.append(f"Email failed: {e}")
+
+    if req.smsEnabled and req.parentPhone:
+        try:
+            sms_text = f"ChildSafeLens Alert: {msg_text} Open Parent Dashboard to review."
+            if len(sms_text) > 160:
+                sms_text = sms_text[:157] + "..."
+            notification_service.sms_provider.send_sms(req.parentPhone, sms_text)
+            success_count += 1
+        except Exception as e:
+            errors.append(f"SMS failed: {e}")
+
+    if success_count == 0 and (req.emailEnabled or req.smsEnabled):
+        raise HTTPException(status_code=502, detail=f"All notification channels failed: {errors}")
+
+    return {"status": "ok", "deliveredChannels": success_count}
 
 
 @app.delete("/events")

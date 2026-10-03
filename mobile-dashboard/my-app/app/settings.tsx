@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, Text, ScrollView, SafeAreaView, TouchableOpacity, Alert } from 'react-native';
+import { View, StyleSheet, Text, ScrollView, SafeAreaView, TouchableOpacity, Alert, TextInput } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -9,6 +9,16 @@ const API_BASE_URL = "http://10.46.19.193:8001";
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const getStoredEmail = () => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('childsafelens_parent_email');
+    }
+    return null;
+  };
+
+  const [parentEmail, setParentEmail] = useState<string>(
+    getStoredEmail() || 'parent@test.com'
+  );
   const [mediumAction, setMediumAction] = useState('ALLOW');
   const [highAction, setHighAction] = useState('BLOCK');
   const [criticalAction, setCriticalAction] = useState('KEEP_PENDING');
@@ -16,6 +26,15 @@ export default function SettingsScreen() {
   const [requireHighRiskApproval, setRequireHighRiskApproval] = useState(true);
   const [autoBlockExplicit, setAutoBlockExplicit] = useState(true);
   const [sendDailySummary, setSendDailySummary] = useState(true);
+
+  // Notification Preferences State
+  const [smsEnabled, setSmsEnabled] = useState(true);
+  const [emailEnabled, setEmailEnabled] = useState(true);
+  const [smsNumber, setSmsNumber] = useState('+919876543210');
+  const [emailAddress, setEmailAddress] = useState(parentEmail);
+  const [highSms, setHighSms] = useState(true);
+  const [criticalSms, setCriticalSms] = useState(true);
+  const [criticalEmail, setCriticalEmail] = useState(true);
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/settings`)
@@ -32,7 +51,22 @@ export default function SettingsScreen() {
         }
       })
       .catch(err => console.error("Failed to load settings", err));
-  }, []);
+
+    fetch(`${API_BASE_URL}/settings/notifications?parentEmail=${encodeURIComponent(parentEmail)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data) {
+          setSmsEnabled(data.smsEnabled !== false);
+          setEmailEnabled(data.emailEnabled !== false);
+          setSmsNumber(data.smsNumber || '+919876543210');
+          setEmailAddress(data.emailAddress || parentEmail);
+          setHighSms(data.highSmsEnabled !== false);
+          setCriticalSms(data.criticalSmsEnabled !== false);
+          setCriticalEmail(data.criticalEmailEnabled !== false);
+        }
+      })
+      .catch(err => console.error("Failed to load notification settings", err));
+  }, [parentEmail]);
 
   const saveSettings = async () => {
     try {
@@ -49,8 +83,29 @@ export default function SettingsScreen() {
           send_daily_summary: sendDailySummary
         })
       });
-      if (res.ok) {
-        Alert.alert("Success", "Parent default timeout settings saved successfully.");
+
+      const resNotif = await fetch(`${API_BASE_URL}/settings/notifications`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          parentEmail: parentEmail,
+          fcmEnabled: true,
+          smsEnabled: smsEnabled,
+          emailEnabled: emailEnabled,
+          smsNumber: smsNumber,
+          emailAddress: emailAddress,
+          mediumFcmEnabled: true,
+          highFcmEnabled: true,
+          highSmsEnabled: highSms,
+          highEmailEnabled: false,
+          criticalFcmEnabled: true,
+          criticalSmsEnabled: criticalSms,
+          criticalEmailEnabled: criticalEmail
+        })
+      });
+
+      if (res.ok && resNotif.ok) {
+        Alert.alert("Success", "Parent settings and notification preferences saved successfully.");
       } else {
         Alert.alert("Error", "Failed to save settings.");
       }
@@ -147,6 +202,83 @@ export default function SettingsScreen() {
               />
               <Text style={styles.toggleLabel}>Always require approval for High Risk</Text>
             </TouchableOpacity>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>🔔 Notification Preferences (SMS & Email)</Text>
+
+            <Text style={styles.label}>SMS Phone Number</Text>
+            <TextInput
+              style={styles.input}
+              value={smsNumber}
+              onChangeText={setSmsNumber}
+              placeholder="+919876543210"
+              placeholderTextColor="#888"
+              keyboardType="phone-pad"
+            />
+
+            <Text style={styles.label}>Email Address</Text>
+            <TextInput
+              style={styles.input}
+              value={emailAddress}
+              onChangeText={setEmailAddress}
+              placeholder="parent@test.com"
+              placeholderTextColor="#888"
+              autoCapitalize="none"
+              keyboardType="email-address"
+            />
+
+            <TouchableOpacity
+              style={[styles.toggleRow, { marginTop: 8 }]}
+              onPress={() => setSmsEnabled(!smsEnabled)}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons
+                name={smsEnabled ? "check-circle" : "radio-button-unchecked"}
+                size={22}
+                color={smsEnabled ? "#4CAF50" : "#BDBDBD"}
+              />
+              <Text style={styles.toggleLabel}>Enable SMS Alerts</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.toggleRow, { marginTop: 12 }]}
+              onPress={() => setEmailEnabled(!emailEnabled)}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons
+                name={emailEnabled ? "check-circle" : "radio-button-unchecked"}
+                size={22}
+                color={emailEnabled ? "#4CAF50" : "#BDBDBD"}
+              />
+              <Text style={styles.toggleLabel}>Enable Email Alerts</Text>
+            </TouchableOpacity>
+
+            <Text style={styles.label}>SMS Risk Levels</Text>
+            <View style={styles.row}>
+              <TouchableOpacity
+                style={[styles.optionBtn, highSms && styles.activeOptionBtn]}
+                onPress={() => setHighSms(!highSms)}
+              >
+                <Text style={[styles.optionText, highSms && styles.activeOptionText]}>High Risk SMS</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.optionBtn, criticalSms && styles.activeOptionBtn]}
+                onPress={() => setCriticalSms(!criticalSms)}
+              >
+                <Text style={[styles.optionText, criticalSms && styles.activeOptionText]}>Critical SMS</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.label}>Email Risk Levels</Text>
+            <View style={styles.row}>
+              <TouchableOpacity
+                style={[styles.optionBtn, criticalEmail && styles.activeOptionBtn]}
+                onPress={() => setCriticalEmail(!criticalEmail)}
+              >
+                <Text style={[styles.optionText, criticalEmail && styles.activeOptionText]}>Critical Email</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           <View style={styles.card}>
@@ -253,6 +385,19 @@ const styles = StyleSheet.create({
     marginBottom: 10, 
     marginTop: 16,
     letterSpacing: 0.3
+  },
+  input: {
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: '#000000',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.95)',
+    marginTop: 6,
+    marginBottom: 12,
+    fontWeight: '600'
   },
   row: { flexDirection: 'row', gap: 10 },
   optionBtn: { 
