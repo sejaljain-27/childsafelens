@@ -30,7 +30,8 @@ const DashboardScreen: React.FC = () => {
   const [parentEmail, setParentEmail] = useState<string>(
     (params.email as string) || getStoredEmail() || 'parent@test.com'
   );
-  const [selectedChild, setSelectedChild] = useState<'Aarav' | 'Kiara'>('Aarav');
+  const [availableChildren, setAvailableChildren] = useState<string[]>(['Aarav']);
+  const [selectedChild, setSelectedChild] = useState<string>('Aarav');
   const [stats, setStats] = useState<DashboardStats>({
     total_events: 0,
     high_risk_count: 0,
@@ -44,9 +45,19 @@ const DashboardScreen: React.FC = () => {
 
   const loadData = async () => {
     setRefreshing(true);
+    const parentIncidents = await fetchAlerts(parentEmail);
+    const children = Array.from(new Set(parentIncidents.map(i => i.childName).filter(Boolean))) as string[];
+    const finalChildren = children.length > 0 ? children : (parentEmail === 'khushi@123.com' ? ['Takshu'] : ['Aarav', 'Kiara']);
+    setAvailableChildren(finalChildren);
+
+    const currentChild = finalChildren.includes(selectedChild) ? selectedChild : finalChildren[0];
+    if (currentChild !== selectedChild) {
+      setSelectedChild(currentChild);
+    }
+
     const [dashboardStats, allIncidents] = await Promise.all([
-      fetchDashboardStats(parentEmail, selectedChild),
-      fetchAlerts(parentEmail, selectedChild)
+      fetchDashboardStats(parentEmail, currentChild),
+      fetchAlerts(parentEmail, currentChild)
     ]);
     setStats(dashboardStats);
 
@@ -122,18 +133,15 @@ const DashboardScreen: React.FC = () => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Connected Child Profile</Text>
             <View style={styles.childTabsRow}>
-              <TouchableOpacity
-                style={[styles.childTab, selectedChild === 'Aarav' && styles.activeChildTab]}
-                onPress={() => setSelectedChild('Aarav')}
-              >
-                <Text style={[styles.childTabText, selectedChild === 'Aarav' && styles.activeChildTabText]}>Aarav (12 yrs)</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.childTab, selectedChild === 'Kiara' && styles.activeChildTab]}
-                onPress={() => setSelectedChild('Kiara')}
-              >
-                <Text style={[styles.childTabText, selectedChild === 'Kiara' && styles.activeChildTabText]}>Kiara (10 yrs)</Text>
-              </TouchableOpacity>
+              {availableChildren.map((child) => (
+                <TouchableOpacity
+                  key={child}
+                  style={[styles.childTab, selectedChild === child && styles.activeChildTab]}
+                  onPress={() => setSelectedChild(child)}
+                >
+                  <Text style={[styles.childTabText, selectedChild === child && styles.activeChildTabText]}>{child}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
 
             {/* Metric Cards (High & Critical Risk focus) */}

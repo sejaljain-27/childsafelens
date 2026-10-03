@@ -109,10 +109,16 @@ def log_event(req: LogEventRequest):
 
 @app.get("/events")
 def get_events(parentEmail: str | None = None, childName: str | None = None):
-    high = sum(1 for e in _events if e["risk_level"] == "high_risk")
-    medium = sum(1 for e in _events if e["risk_level"] == "medium_risk")
-    low = sum(1 for e in _events if e["risk_level"] == "low_risk")
-    return {"total_events": len(_events), "high_risk_count": high, "medium_risk_count": medium, "low_risk_count": low}
+    incidents = list(_incidents.values())
+    if parentEmail:
+        incidents = [i for i in incidents if i.get("parentEmail", "").lower() == parentEmail.lower()]
+    if childName:
+        incidents = [i for i in incidents if i.get("childName", "").lower() == childName.lower()]
+
+    high = sum(1 for i in incidents if str(i.get("riskLevel", "")).upper() in ["HIGH", "CRITICAL", "HIGH_RISK"])
+    medium = sum(1 for i in incidents if str(i.get("riskLevel", "")).upper() in ["MEDIUM", "MEDIUM_RISK"])
+    low = sum(1 for i in incidents if str(i.get("riskLevel", "")).upper() in ["LOW", "LOW_RISK"])
+    return {"total_events": len(incidents), "high_risk_count": high, "medium_risk_count": medium, "low_risk_count": low}
 
 
 @app.post("/incidents")
@@ -140,14 +146,10 @@ def create_incident(inc: IncidentCreate):
 @app.get("/incidents")
 def get_incidents(parentEmail: str | None = None, childName: str | None = None):
     results = list(_incidents.values())
-    if parentEmail and childName:
-        filtered = [i for i in results if i.get("parentEmail", "").lower() == parentEmail.lower() and i.get("childName", "").lower() == childName.lower()]
-        if filtered:
-            return filtered
     if parentEmail:
-        filtered = [i for i in results if i.get("parentEmail", "").lower() == parentEmail.lower()]
-        if filtered:
-            return filtered
+        results = [i for i in results if i.get("parentEmail", "").lower() == parentEmail.lower()]
+    if childName:
+        results = [i for i in results if i.get("childName", "").lower() == childName.lower()]
     return results
 
 
