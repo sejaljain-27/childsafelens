@@ -10,7 +10,7 @@ const isSmallScreen = SCREEN_WIDTH < 380;
 const isMediumScreen = SCREEN_WIDTH >= 380 && SCREEN_WIDTH < 768;
 const isLargeScreen = SCREEN_WIDTH >= 768;
 
-const API_BASE_URL = "http://10.46.19.193:8001";
+const API_BASE_URL = "http://localhost:8001";
 
 interface AnalyticsData {
   total_incidents: number;
@@ -31,15 +31,23 @@ export default function ReportsScreen() {
   });
 
   useEffect(() => {
-    // Fetch analytics data from backend
-    fetch(`${API_BASE_URL}/analytics`)
+    // Fetch events or analytics data from backend gracefully
+    fetch(`${API_BASE_URL}/events`)
       .then(res => res.json())
       .then(data => {
         if (data) {
-          setAnalytics(data);
+          setAnalytics(prev => ({
+            ...prev,
+            total_incidents: data.total_events || prev.total_incidents,
+            high_risk: data.high_risk_count || prev.high_risk,
+            medium_risk: data.medium_risk_count || prev.medium_risk,
+            low_risk: data.low_risk_count || prev.low_risk
+          }));
         }
       })
-      .catch(err => console.error("Failed to load analytics", err));
+      .catch(() => {
+        // Fallback silently if backend is offline
+      });
   }, []);
 
   return (

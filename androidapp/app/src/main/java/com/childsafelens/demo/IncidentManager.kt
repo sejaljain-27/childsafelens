@@ -90,37 +90,48 @@ object IncidentManager {
 
     private fun transmitToBackend(incident: IncidentEntity) {
         scope.launch(Dispatchers.IO) {
-            try {
-                val url = URL("$BASE_URL/incidents")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    setRequestProperty("Content-Type", "application/json; utf-8")
-                    setRequestProperty("Accept", "application/json")
-                    doOutput = true
-                    connectTimeout = 3000
-                    readTimeout = 3000
-                }
+            val candidateUrls = listOf(
+                "$BASE_URL/incidents",
+                "http://localhost:8001/incidents",
+                "http://127.0.0.1:8001/incidents",
+                "http://10.0.2.2:8001/incidents"
+            )
+            for (urlString in candidateUrls.distinct()) {
+                try {
+                    val url = URL(urlString)
+                    val conn = (url.openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        setRequestProperty("Content-Type", "application/json; utf-8")
+                        setRequestProperty("Accept", "application/json")
+                        doOutput = true
+                        connectTimeout = 2000
+                        readTimeout = 2000
+                    }
 
-                val json = JSONObject().apply {
-                    put("incidentId", incident.incidentId)
-                    put("parentEmail", incident.parentEmail)
-                    put("childId", incident.childId)
-                    put("childName", incident.childName)
-                    put("type", incident.type)
-                    put("messageSnippet", incident.messageSnippet)
-                    put("riskScore", incident.riskScore)
-                    put("riskLevel", incident.riskLevel)
-                    put("category", incident.category)
-                    put("packageName", incident.packageName)
-                    put("timestamp", incident.timestamp)
-                    put("status", incident.status)
-                }
+                    val json = JSONObject().apply {
+                        put("incidentId", incident.incidentId)
+                        put("parentEmail", incident.parentEmail)
+                        put("childId", incident.childId)
+                        put("childName", incident.childName)
+                        put("type", incident.type)
+                        put("messageSnippet", incident.messageSnippet)
+                        put("riskScore", incident.riskScore)
+                        put("riskLevel", incident.riskLevel)
+                        put("category", incident.category)
+                        put("packageName", incident.packageName)
+                        put("timestamp", incident.timestamp)
+                        put("status", incident.status)
+                    }
 
-                OutputStreamWriter(conn.outputStream).use { it.write(json.toString()) }
-                val responseCode = conn.responseCode
-                Log.d(TAG, "Incident transmission response: $responseCode")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to transmit incident to $BASE_URL/incidents: ${e.message}", e)
+                    OutputStreamWriter(conn.outputStream).use { it.write(json.toString()) }
+                    val responseCode = conn.responseCode
+                    Log.d(TAG, "Incident transmission response: $responseCode from $urlString")
+                    if (responseCode in 200..299) {
+                        break
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "Transmission to $urlString failed: ${e.message}")
+                }
             }
         }
     }

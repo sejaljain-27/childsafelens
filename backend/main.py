@@ -125,6 +125,7 @@ def get_events(parentEmail: str | None = None, childName: str | None = None):
 
 @app.post("/incidents")
 def create_incident(inc: IncidentCreate):
+    print(f"📥 Received incident from device: {inc.incidentId} | Child: {inc.childName} | Risk: {inc.riskLevel} | Snippet: {inc.messageSnippet}")
     incident_data = {
         "incidentId": inc.incidentId,
         "parentEmail": inc.parentEmail,
@@ -155,9 +156,9 @@ def create_incident(inc: IncidentCreate):
 def get_incidents(parentEmail: str | None = None, childName: str | None = None):
     results = list(_incidents.values())
     if parentEmail:
-        results = [i for i in results if i.get("parentEmail", "").lower() == parentEmail.lower()]
+        results = [i for i in results if i.get("parentEmail", "").strip().lower() == parentEmail.strip().lower()]
     if childName:
-        results = [i for i in results if i.get("childName", "").lower() == childName.lower()]
+        results = [i for i in results if i.get("childName", "").strip().lower() == childName.strip().lower()]
     return results
 
 
