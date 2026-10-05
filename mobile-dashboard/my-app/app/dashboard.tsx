@@ -61,8 +61,16 @@ const DashboardScreen: React.FC = () => {
     ]);
     setStats(dashboardStats);
 
-    // Show all captured incidents (Safe, Medium, High, Pending) so any test message appears immediately
-    const filtered = allIncidents;
+    // Filter out low risk / safe messages; keep only Medium, High, Critical risk or pending/edit required items
+    const filtered = allIncidents.filter(i => {
+      const risk = i.riskLevel?.toUpperCase() || '';
+      const status = i.status?.toUpperCase() || '';
+      const isLow = risk === 'LOW' || risk === 'LOW_RISK' || risk === 'SAFE';
+      const isMediumOrHigher = risk === 'MEDIUM' || risk === 'MEDIUM_RISK' || risk === 'HIGH' || risk === 'HIGH_RISK' || risk === 'CRITICAL';
+      const isPendingOrAction = status === 'PENDING' || status === 'PENDING_PARENT_REVIEW' || status === 'EDIT_REQUIRED';
+
+      return (isMediumOrHigher || isPendingOrAction) && !isLow;
+    });
 
     setOutgoingIncidents(filtered.filter(i => (i.type?.toUpperCase() === 'OUTGOING') || !i.type));
     setIncomingIncidents(filtered.filter(i => i.type?.toUpperCase() === 'INCOMING'));
