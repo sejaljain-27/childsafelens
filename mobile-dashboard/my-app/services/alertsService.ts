@@ -217,10 +217,14 @@ export interface ChildRiskTimeline {
 export interface SocialGraphRisk {
   child_id: string;
   status: string;
-  attacker_count: number | null;
+  attacker_count: number;
+  identified_attackers: string[];
+  attacker_identity_status: string;
   observed_attacker_count: number;
   interaction_count: number;
+  observed_interactions: number;
   incident_concentration: number | null;
+  sender_concentration: number | null;
   graph_score: number | null;
   graph_score_status: string;
   features: {
@@ -253,6 +257,7 @@ export interface CurrentMessageAnalysis {
   classification: 'Bullying' | 'Clean';
   probability: number | null;
   category: string | null;
+  categories?: { name: string; prob: number }[];
   model_version: string;
   text_status: 'available' | 'not_provided';
   targeting_evidence: string[];
@@ -267,6 +272,7 @@ interface TextPredictionResponse {
   classification_label: 'Bullying' | 'Clean' | null;
   p_bullying: number | null;
   category: string | null;
+  categories?: { name: string; prob: number }[];
   model_version: string;
   model_status: string;
   text_evidence_available: boolean;
@@ -290,6 +296,15 @@ const isCurrentMessageAnalysis = (value: unknown): value is CurrentMessageAnalys
     && (analysis.probability === null
       || (typeof analysis.probability === 'number' && Number.isFinite(analysis.probability)))
     && (analysis.category === null || typeof analysis.category === 'string')
+    && (analysis.categories === undefined
+      || (Array.isArray(analysis.categories)
+        && analysis.categories.every(item =>
+          typeof item?.name === 'string'
+          && typeof item?.prob === 'number'
+          && Number.isFinite(item.prob)
+          && item.prob >= 0
+          && item.prob <= 1,
+        )))
     && typeof analysis.model_version === 'string'
     && (analysis.text_status === 'available' || analysis.text_status === 'not_provided')
     && Array.isArray(analysis.targeting_evidence)
@@ -379,6 +394,7 @@ export const analyzeCurrentMessage = async (
       ? result.p_bullying
       : null,
     category: result.category,
+    categories: result.categories ?? [],
     model_version: result.model_version,
     text_status: text.trim() && result.text_evidence_available ? 'available' : 'not_provided',
     targeting_evidence: result.targeting_evidence?.supporting_evidence ?? [],
@@ -393,6 +409,13 @@ export const analyzeCurrentMessage = async (
 export interface ResearchRisk {
   child_id: string | null;
   incident_count: number | null;
+  targeting_score?: number | null;
+  targeting_evidence?: string[];
+  identified_attackers?: string[];
+  identified_attacker_count?: number;
+  observed_interactions?: number;
+  sender_concentration?: number | null;
+  social_risk?: number | null;
   history_metrics?: {
     dated_incident_count: number;
     active_days: number;
@@ -486,9 +509,14 @@ export interface ResearchRisk {
   };
   social_graph: {
     status: string;
-    attacker_count: number | null;
+    attacker_count: number;
+    identified_attackers: string[];
+    attacker_identity_status: string;
     repeated_attacker_count: number | null;
     interaction_count: number;
+    observed_interactions: number;
+    incident_concentration: number | null;
+    sender_concentration: number | null;
   };
 }
 
@@ -589,9 +617,14 @@ const unavailableResearchRisk = (status: string, message: string): ResearchRisk 
   explanation: { status, contributors: null },
   social_graph: {
     status: 'unavailable',
-    attacker_count: null,
+    attacker_count: 0,
+    identified_attackers: [],
+    attacker_identity_status: 'sender_identity_fields_unavailable',
     repeated_attacker_count: null,
     interaction_count: 0,
+    observed_interactions: 0,
+    incident_concentration: null,
+    sender_concentration: null,
   },
 });
 

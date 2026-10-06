@@ -1,6 +1,7 @@
 import unittest
 import inspect
 import json
+import math
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -798,8 +799,9 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(stored["targeting_evidence"]["analysis_status"], "completed")
         self.assertEqual(
             stored["targeting_evidence"]["status"],
-            "insufficient_evidence",
+            "computed",
         )
+        self.assertAlmostEqual(stored["targeting_evidence"]["score"], 2 / 3)
         self.assertEqual(
             stored["targeting_evidence"]["indicators"]["second_person_reference"],
             True,
@@ -845,11 +847,13 @@ class ResearchRouteTests(unittest.TestCase):
         )
         self.assertEqual(
             assessment["components"]["targeting"]["status"],
-            "insufficient_evidence",
+            "computed",
         )
+        self.assertEqual(assessment["components"]["targeting"]["value"], 0.0)
+        self.assertIsNone(assessment["components"]["severity"]["value"])
         self.assertEqual(
             assessment["components"]["severity"]["status"],
-            "computed",
+            "insufficient_evidence",
         )
         self.assertEqual(assessment["components"]["severity"]["evidence"], [])
         self.assertEqual(
@@ -866,7 +870,67 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(assessment["multimodal_evidence"]["video"], "not_provided")
         self.assertIsInstance(assessment["crs"], int)
         self.assertIsInstance(assessment["components"]["historical"]["value"], float)
+        self.assertEqual(assessment["targeting_score"], 0.0)
+        self.assertEqual(assessment["components"]["targeting"]["value"], 0.0)
+        self.assertIsNone(assessment["components"]["multimodal"]["value"])
+        self.assertEqual(
+            assessment["components"]["multimodal"]["status"],
+            "no_additional_multimodal_evidence",
+        )
+        self.assertNotIn(
+            "M",
+            assessment["risk_fusion"]["deterministic_research_fusion"]["available_features"],
+        )
         self.assertEqual(stored["multimodalAnalysis"]["processingStatus"], "not_required")
+
+    def test_current_blackmail_category_sets_research_severity_without_history_leak(self):
+        main._incidents["historical-severity-test"] = {
+            "incidentId": "historical-severity-test",
+            "childId": "child-1",
+            "parentEmail": "parent@test.com",
+            "childName": "Aarav",
+            "timestamp": 1_791_138_000_000,
+            "category": "Insult",
+            "severity_evidence": {
+                "analysis_status": "completed",
+                "indicators": ["insult"],
+            },
+            "classifierOutput": {
+                "modelVersion": "cyberbullying-cascade-v4",
+                "output": {"probability": 0.8, "category": "Insult"},
+            },
+        }
+        current_analysis = {
+            "classification": "Bullying",
+            "probability": 0.91,
+            "category": "Blackmail",
+            "categories": [{"name": "Blackmail", "prob": 0.86}],
+            "model_version": "cyberbullying-cascade-v4",
+            "text_status": "available",
+            "targeting_evidence": ["direct_mention"],
+            "severity_evidence": [],
+            "targeting_score": None,
+            "targeting_signals": {
+                "direct_mention": True,
+                "child_name_reference": False,
+            },
+        }
+
+        assessment = main.get_child_risk(
+            "child-1",
+            "parent@test.com",
+            currentAnalysis=json.dumps(current_analysis),
+        )
+
+        self.assertEqual(assessment["components"]["severity"]["value"], 0.8)
+        self.assertEqual(assessment["components"]["severity"]["evidence"], ["blackmail"])
+        self.assertEqual(assessment["components"]["severity"]["scope"], "current_message")
+        self.assertIsNotNone(assessment["components"]["targeting"]["value"])
+        self.assertIsNone(assessment["components"]["multimodal"]["value"])
+        self.assertIn(
+            "S",
+            assessment["risk_fusion"]["deterministic_research_fusion"]["available_features"],
+        )
 
     def test_text_image_and_audio_incidents_do_not_fabricate_missing_score_components(self):
         incident_weights = {
@@ -913,7 +977,7 @@ class ResearchRouteTests(unittest.TestCase):
                     stored["incident_score_status"],
                     "insufficient_component_evidence",
                 )
-                self.assertIn("targeting", stored["incident_score_missing_components"])
+                self.assertNotIn("targeting", stored["incident_score_missing_components"])
                 self.assertNotIn("severity", stored["incident_score_missing_components"])
                 self.assertIn("multimodal", stored["incident_score_missing_components"])
 
@@ -1015,6 +1079,21 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(analytics["total_incidents"], 9)
         self.assertEqual(events["total_events"], 9)
         self.assertEqual(by_profile_id["history_metrics"]["active_days"], 2)
+        self.assertEqual(by_profile_id["observed_interactions"], 9)
+        self.assertEqual(by_profile_id["identified_attackers"], [
+            "sender-0",
+            "sender-1",
+            "sender-2",
+        ])
+        self.assertEqual(by_profile_id["identified_attacker_count"], 3)
+        self.assertAlmostEqual(by_profile_id["sender_concentration"], 1 / 3)
+        self.assertIsNotNone(by_profile_id["social_risk"])
+        self.assertEqual(social["identified_attackers"], [
+            "sender-0",
+            "sender-1",
+            "sender-2",
+        ])
+        self.assertAlmostEqual(social["sender_concentration"], 1 / 3)
         self.assertEqual(
             by_profile_id["history_metrics"]["average_incidents_per_active_day"],
             4.5,
@@ -1390,10 +1469,17 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(graph["attacker_count"], 2)
         self.assertEqual(graph["interaction_count"], 3)
         self.assertEqual(graph["features"]["concentration"]["value"], 2 / 3)
-        self.assertEqual(graph["graph_score_status"], "computed_development_metric")
+        self.assertEqual(
+            graph["graph_score_status"],
+            "computed_from_observed_relationships",
+        )
         self.assertAlmostEqual(
             graph["graph_score"],
-            ((2 / 7) + (2 / 3) + (3 / 7)) / 3,
+            (
+                (math.log1p(2) / math.log1p(20))
+                + (2 / 3)
+                + (math.log1p(3) / math.log1p(20))
+            ) / 3,
         )
 
     def test_social_graph_route_returns_no_history_for_child_without_incidents(self):

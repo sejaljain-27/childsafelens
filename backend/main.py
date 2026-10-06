@@ -957,6 +957,30 @@ def get_child_risk(
                 status_code=422,
                 detail="Current message analysis must contain a completed cascade text prediction.",
             )
+        if parsed_analysis.get("category") is not None and not isinstance(
+            parsed_analysis.get("category"), str
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Current message category must be a string or null.",
+            )
+        categories = parsed_analysis.get("categories")
+        if categories is not None and (
+            not isinstance(categories, list)
+            or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("name"), str)
+                or isinstance(item.get("prob"), bool)
+                or not isinstance(item.get("prob"), (int, float))
+                or not math.isfinite(item["prob"])
+                or not 0 <= item["prob"] <= 1
+                for item in categories
+            )
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Current message categories must contain valid names and probabilities.",
+            )
         probability = parsed_analysis.get("probability")
         if probability is not None and (
             isinstance(probability, bool)

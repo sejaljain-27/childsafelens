@@ -32,21 +32,56 @@ class ResearchRiskTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "computed")
-        self.assertAlmostEqual(result["score"], 0.75)
+        self.assertAlmostEqual(result["score"], 0.6)
         self.assertEqual(
             result["supporting_evidence"],
             ["direct_mention", "child_name_reference", "reply_to_child"],
         )
 
-    def test_second_person_alone_does_not_confirm_targeting(self):
+    def test_second_person_and_personal_attack_are_scored_from_current_text(self):
         result = targeting_evidence("You are so stupid")
 
-        self.assertEqual(result["status"], "insufficient_evidence")
+        self.assertEqual(result["status"], "computed")
         self.assertEqual(result["analysis_status"], "completed")
         self.assertIn("second_person_reference", result["available_signals"])
-        self.assertEqual(result["supporting_evidence"], ["second_person_reference"])
-        self.assertEqual(result["score_status"], "insufficient_evidence_to_confirm_target")
-        self.assertIsNone(result["score"])
+        self.assertIn("direct_personal_attack", result["supporting_evidence"])
+        self.assertEqual(result["score_status"], "computed_from_available_signals")
+        self.assertEqual(result["score"], 1.0)
+
+    def test_current_second_person_reference_supports_targeting_without_classifier_inference(self):
+        from research_risk import _current_targeting_score
+
+        contextual = {
+            "severity_evidence": ["insult"],
+            "targeting_signals": {
+                "second_person_reference": True,
+                "child_name_reference": False,
+            },
+        }
+        self.assertAlmostEqual(_current_targeting_score(contextual), 0.5)
+        self.assertAlmostEqual(_current_targeting_score({
+            "severity_evidence": [],
+            "category": "Blackmail",
+            "targeting_signals": {
+                "second_person_reference": True,
+                "child_name_reference": False,
+            },
+        }), 0.5)
+        self.assertEqual(_current_targeting_score({
+            "severity_evidence": [],
+            "category": "Insult",
+            "targeting_signals": {
+                "second_person_reference": True,
+                "child_name_reference": False,
+            },
+        }), 0.5)
+        self.assertEqual(_current_targeting_score({"targeting_signals": {}}), 0.0)
+
+    def test_targeting_recognizes_hinglish_second_person_reference(self):
+        result = targeting_evidence("tere sare nudes leak kar dunga")
+
+        self.assertTrue(result["indicators"]["second_person_reference"])
+        self.assertIn("second_person_reference", result["supporting_evidence"])
 
     def test_targeting_score_normalizes_only_available_configured_signals(self):
         result = targeting_evidence(
@@ -59,6 +94,7 @@ class ResearchRiskTests(unittest.TestCase):
                 "reply_to_child": 1,
                 "personal_reference": 2,
                 "second_person_reference": 3,
+                "direct_personal_attack": 1,
             },
         )
 
@@ -70,9 +106,10 @@ class ResearchRiskTests(unittest.TestCase):
                 "reply_to_child",
                 "personal_reference",
                 "second_person_reference",
+                "direct_personal_attack",
             ],
         )
-        self.assertAlmostEqual(result["score"], 6 / 8)
+        self.assertAlmostEqual(result["score"], 7 / 9)
 
     def test_severity_evidence_uses_default_research_severity_weights(self):
         result = severity_evidence(["threat", "threat", "unrecognized"])
@@ -317,9 +354,16 @@ class ResearchRiskTests(unittest.TestCase):
 
         self.assertAlmostEqual(
             graph["graph_score"],
-            ((2 / 7) + (2 / 3) + (3 / 7)) / 3,
+            (
+                (math.log1p(2) / math.log1p(20))
+                + (2 / 3)
+                + (math.log1p(3) / math.log1p(20))
+            ) / 3,
         )
-        self.assertEqual(graph["graph_score_status"], "computed_development_metric")
+        self.assertEqual(
+            graph["graph_score_status"],
+            "computed_from_observed_relationships",
+        )
         self.assertEqual(
             graph["graph_score_weight_status"],
             "configured_development_parameters",
@@ -331,7 +375,7 @@ class ResearchRiskTests(unittest.TestCase):
         )
 
         self.assertEqual(graph["status"], "insufficient_interaction_data")
-        self.assertIsNone(graph["attacker_count"])
+        self.assertEqual(graph["attacker_count"], 0)
         self.assertEqual(graph["observed_attacker_count"], 0)
         self.assertEqual(graph["interaction_count"], 0)
 
@@ -340,12 +384,65 @@ class ResearchRiskTests(unittest.TestCase):
 
         self.assertEqual(graph["status"], "no_history")
         self.assertEqual(graph["interaction_count"], 0)
-        self.assertIsNone(graph["attacker_count"])
+        self.assertEqual(graph["attacker_count"], 0)
         self.assertEqual(graph["observed_attacker_count"], 0)
         self.assertIsNone(graph["graph_score"])
         self.assertEqual(graph["graph_score_status"], "no_history")
-        self.assertEqual(len(graph["edges"]), 0)
+        self.assertEqual(graph["edges"], [])
         self.assertEqual(graph["nodes"], [])
+
+    def test_social_graph_counts_real_incoming_outgoing_incidents_without_fake_nodes(self):
+        incidents = [
+            {
+                "incidentId": f"incident-{index}",
+                "childId": "child-1",
+                "senderId": None,
+                "type": "INCOMING" if index < 8 else "OUTGOING",
+            }
+            for index in range(10)
+        ]
+
+        graph = social_graph(incidents, "child-1")
+
+        self.assertEqual(graph["interaction_count"], 10)
+        self.assertEqual(graph["observed_interactions"], 10)
+        self.assertEqual(graph["identified_attackers"], [])
+        self.assertEqual(graph["attacker_count"], 0)
+        self.assertIsNone(graph["sender_concentration"])
+        self.assertEqual(graph["incoming_interaction_count"], 8)
+        self.assertEqual(graph["graph_score_status"], "computed_from_observed_interactions")
+        self.assertIsNotNone(graph["graph_score"])
+        self.assertEqual(graph["edges"], [])
+
+    def test_social_graph_extracts_available_sender_aliases_and_recipient_relationships(self):
+        incidents = [
+            {
+                "incidentId": "incoming-1",
+                "childId": "child-1",
+                "sender_id": "sender-a",
+                "type": "INCOMING",
+            },
+            {
+                "incidentId": "incoming-2",
+                "childId": "child-1",
+                "author": {"username": "sender-b"},
+                "type": "INCOMING",
+            },
+            {
+                "incidentId": "outgoing-1",
+                "childId": "child-1",
+                "recipientId": "recipient-a",
+                "type": "OUTGOING",
+            },
+        ]
+
+        graph = social_graph(incidents, "child-1")
+
+        self.assertEqual(graph["identified_attackers"], ["sender-a", "sender-b"])
+        self.assertEqual(graph["attacker_count"], 2)
+        self.assertEqual(graph["interaction_count"], 3)
+        self.assertEqual(graph["sender_concentration"], 1 / 3)
+        self.assertEqual(len(graph["edges"]), 3)
 
     def test_deterministic_fusion_renormalizes_available_features_and_reports_contributions(self):
         result = deterministic_risk_fusion({"P": 0.8, "S": 0.2})
@@ -360,7 +457,7 @@ class ResearchRiskTests(unittest.TestCase):
         self.assertAlmostEqual(contributions["P"], 80)
         self.assertAlmostEqual(contributions["S"], 20)
 
-    def test_temporal_component_uses_available_incident_count_and_recency(self):
+    def test_temporal_component_uses_dated_log_frequency_recency_and_span(self):
         from research_risk import _temporal_component
 
         now = datetime(2026, 10, 4, tzinfo=timezone.utc)
@@ -368,9 +465,57 @@ class ResearchRiskTests(unittest.TestCase):
         result = _temporal_component(incidents, now)
 
         self.assertEqual(result["status"], "computed")
-        self.assertEqual(result["frequency"], 1.0)
+        self.assertAlmostEqual(
+            result["frequency"],
+            math.log1p(7) / math.log1p(20),
+        )
         self.assertEqual(result["recency"], 1.0)
-        self.assertEqual(result["value"], 1.0)
+        self.assertEqual(result["time_span"], 0.0)
+        self.assertAlmostEqual(
+            result["value"],
+            0.55 * result["frequency"] + 0.30,
+        )
+        self.assertEqual(
+            result["formula"],
+            "weighted_logarithmic_dated_frequency_recency_and_time_span",
+        )
+
+    def test_temporal_component_does_not_saturate_for_ten_same_day_incidents(self):
+        from research_risk import _temporal_component
+
+        now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        incidents = [
+            {"timestamp": (now - timedelta(minutes=index * 5)).timestamp()}
+            for index in range(10)
+        ]
+        result = _temporal_component(incidents, now)
+
+        self.assertEqual(result["dated_incident_count"], 10)
+        self.assertEqual(result["observed_incident_count"], 10)
+        self.assertLess(result["value"], 0.95)
+        self.assertAlmostEqual(
+            result["frequency"],
+            math.log1p(10) / math.log1p(20),
+        )
+        self.assertGreater(result["time_span"], 0)
+
+    def test_escalation_uses_model_categories_and_ignores_repeated_equal_severity(self):
+        from research_risk import _escalation_component
+
+        now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        increasing = [
+            {"timestamp": (now - timedelta(days=3)).timestamp(), "category": "Insult"},
+            {"timestamp": (now - timedelta(days=2)).timestamp(), "category": "Harassment"},
+            {"timestamp": (now - timedelta(days=1)).timestamp(), "category": "Threat"},
+            {"timestamp": now.timestamp(), "category": "Blackmail"},
+        ]
+        repeated = [
+            {"timestamp": (now - timedelta(days=1)).timestamp(), "category": "Blackmail"},
+            {"timestamp": now.timestamp(), "category": "Blackmail"},
+        ]
+
+        self.assertGreater(_escalation_component(increasing)["value"], 0)
+        self.assertEqual(_escalation_component(repeated)["value"], 0)
 
     def test_escalation_uses_only_incidents_with_actual_severity_indicators(self):
         from research_risk import _escalation_component

@@ -40,7 +40,7 @@ const riskComponentLabels = [
   ['classifier_probability', 'Cyberbullying classifier probability'],
   ['targeting', 'Targeting'],
   ['severity', 'Severity'],
-  ['multimodal', 'Multimodal'],
+  ['multimodal', 'Multimodal Evidence'],
   ['temporal', 'Temporal'],
   ['escalation', 'Escalation'],
   ['social_graph', 'Social'],
@@ -60,6 +60,8 @@ const displayComponentValue = (
   }
   if (status === 'observed_descriptive') return 'Descriptive only';
   if (status === 'text_available_optional_media_not_provided') return 'Text available';
+  if (status === 'no_additional_multimodal_evidence') return 'No additional evidence';
+  if (status === 'current_message_unavailable') return 'Not available';
   if (status?.includes('insufficient') || status?.includes('uncalibrated')) {
     return 'Insufficient evidence';
   }
@@ -391,7 +393,13 @@ const DashboardScreen: React.FC = () => {
                     Stored incidents: {researchRisk?.incident_count ?? 'Not available'}
                   </Text>
                   <Text style={styles.researchRiskText}>
-                    Identified attackers: {researchRisk?.social_graph.attacker_count ?? 'Not available'}
+                    Identified attackers: {researchRisk?.social_graph.attacker_count === null
+                      || researchRisk?.social_graph.attacker_count === undefined
+                      ? 'Not available'
+                      : researchRisk.social_graph.attacker_count}
+                    {researchRisk?.social_graph.identified_attackers?.length
+                      ? ` · ${researchRisk.social_graph.identified_attackers.join(', ')}`
+                      : ''}
                   </Text>
                   <Text style={styles.researchRiskNote}>
                     {researchRisk?.message ?? 'Loading risk assessment status.'}
@@ -405,8 +413,17 @@ const DashboardScreen: React.FC = () => {
                     const currentValue = key === 'targeting'
                       ? currentMessageAnalysis?.targeting_score
                       : key === 'severity'
-                        ? currentMessageAnalysis?.severity_score
+                        ? component?.value
                         : undefined;
+                    const currentSeverityEvidence = currentMessageAnalysis
+                      ? Array.from(new Set([
+                        ...currentMessageAnalysis.severity_evidence,
+                        ...(currentMessageAnalysis.categories?.map(item => item.name)
+                          ?? (currentMessageAnalysis.category
+                            ? [currentMessageAnalysis.category]
+                            : [])),
+                      ]))
+                      : [];
                     return (
                       <View key={key} style={styles.researchRiskRow}>
                         <Text style={styles.researchRiskText}>{label}</Text>
@@ -416,10 +433,14 @@ const DashboardScreen: React.FC = () => {
                                 ? 'Not available'
                                 : String(currentMessageAnalysis.probability)
                             : typeof currentValue === 'number'
-                              ? displayResearchPercent(currentValue)
+                              ? key === 'severity'
+                                ? `${Math.round(currentValue * 100)}% research-derived severity score`
+                                : displayResearchPercent(currentValue)
                               : ['targeting', 'severity', 'multimodal', 'temporal', 'escalation', 'social_graph', 'historical'].includes(key)
                                 ? typeof component?.value === 'number'
-                                  ? displayResearchPercent(component.value)
+                                  ? key === 'severity' && currentMessageAnalysis
+                                    ? `${Math.round(component.value * 100)}% research-derived severity score`
+                                    : displayResearchPercent(component.value)
                                   : displayComponentValue(
                                     component?.value,
                                     component?.status,
@@ -444,13 +465,18 @@ const DashboardScreen: React.FC = () => {
                         )}
                         {key === 'targeting' && (currentMessageAnalysis || component?.evidence?.length) ? (
                           <Text style={styles.researchRiskNote}>
-                            Evidence: {(currentMessageAnalysis?.targeting_evidence ?? component?.evidence ?? []).join(', ') || 'Insufficient evidence'}
+                            Evidence: {typeof component?.value === 'number'
+                              ? (researchRisk?.current_message?.targeting_evidence
+                                ?? currentMessageAnalysis?.targeting_evidence
+                                ?? component?.evidence
+                                ?? []).join(', ') || 'Insufficient evidence'
+                              : 'Insufficient evidence'}
                           </Text>
                         ) : null}
                         {key === 'severity' && (
                           <Text style={styles.researchRiskNote}>
                             {currentMessageAnalysis
-                              ? `Current message evidence: ${currentMessageAnalysis.severity_evidence.join(', ') || 'None observed'}`
+                              ? `Current message evidence: ${currentSeverityEvidence.join(', ') || 'None observed'}. This is a research-derived severity weight, not a model probability.`
                               : 'No current message severity evidence is available. Historical severity evidence is shown only in the timeline.'}
                           </Text>
                         )}
@@ -467,7 +493,7 @@ const DashboardScreen: React.FC = () => {
                         {key === 'multimodal' && (
                           <Text style={styles.researchRiskNote}>
                             {currentTextAvailable
-                              ? 'Analysis status: Completed using available text evidence. Image, audio, and video were skipped because they were not provided.'
+                              ? 'Text evidence used by the classifier; no additional image/audio/video evidence was provided.'
                               : `Text: ${currentMessageAnalysis
                                 ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
                                 : component?.text_status === 'available' ? 'Available' : 'Not provided'} · Image: ${displayModalityStatus(component?.image_status)} · Audio: ${displayModalityStatus(component?.audio_status)} · Video: ${displayModalityStatus(component?.video_status)}`}
@@ -547,14 +573,18 @@ const DashboardScreen: React.FC = () => {
                     {' · '}Identified senders: {displayEvidenceCount(socialGraph?.attacker_count)}
                   </Text>
                   <Text style={styles.researchRiskText}>
-                    Sender concentration: {displayComponentValue(
-                      socialGraph?.features.concentration.value,
-                      socialGraph?.features.concentration.status,
-                    )}
-                    {' · '}Graph score: {displayComponentValue(
-                      socialGraph?.graph_score,
-                      socialGraph?.graph_score_status,
-                    )}
+                    Sender concentration: {typeof socialGraph?.sender_concentration === 'number'
+                      ? displayResearchPercent(socialGraph.sender_concentration)
+                      : displayComponentValue(
+                        socialGraph?.sender_concentration,
+                        socialGraph?.features.concentration.status,
+                      )}
+                    {' · '}Social risk: {typeof socialGraph?.graph_score === 'number'
+                      ? displayResearchPercent(socialGraph.graph_score)
+                      : displayComponentValue(
+                        socialGraph?.graph_score,
+                        socialGraph?.graph_score_status,
+                      )}
                   </Text>
                   <Text style={styles.researchRiskSubheading}>SHAP contributors</Text>
                   {riskExplanation?.status === 'computed' && riskExplanation.contributors?.length ? (

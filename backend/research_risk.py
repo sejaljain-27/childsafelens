@@ -27,8 +27,10 @@ TARGETING_SIGNALS = (
     "child_name_reference",
     "reply_to_child",
     "personal_reference",
+    "second_person_reference",
+    "direct_personal_attack",
 )
-TARGETING_FEATURES = (*TARGETING_SIGNALS, "second_person_reference")
+TARGETING_FEATURES = TARGETING_SIGNALS
 SOCIAL_GRAPH_FEATURES = ("attackers", "concentration", "frequency")
 TARGETING_RESEARCH_WEIGHTS = {name: 1.0 for name in TARGETING_FEATURES}
 SEVERITY_RESEARCH_WEIGHTS = {
@@ -52,7 +54,8 @@ FUSION_RESEARCH_WEIGHTS = {
 }
 _GRAPH_PSEUDONYM_KEY = secrets.token_bytes(32)
 _SECOND_PERSON_REFERENCE = re.compile(
-    r"(?<!\w)(?:you|your|yours|yourself|yourselves)(?!\w)",
+    r"(?<!\w)(?:you|your|yours|yourself|yourselves|tu|tum|tera|teri|tere|"
+    r"tujhe|tumhe|tumhara|tumhari|tumhare|aap|apka|apki|apke)(?!\w)",
     flags=re.IGNORECASE,
 )
 _TEXT_SEVERITY_CUES = {
@@ -211,12 +214,18 @@ def targeting_evidence(
     if child_name and child_name.strip():
         name_reference = _contains_phrase(text, child_name)
 
+    personal_attack = any(
+        _contains_phrase(text, cue)
+        for category in ("insult", "harassment", "humiliation", "threat", "blackmail")
+        for cue in _TEXT_SEVERITY_CUES[category]
+    )
     indicators: dict[str, bool | None] = {
         "direct_mention": direct_mention,
         "child_name_reference": name_reference,
         "reply_to_child": reply_to_child,
         "personal_reference": personal_reference,
         "second_person_reference": bool(_SECOND_PERSON_REFERENCE.search(text)),
+        "direct_personal_attack": personal_attack,
     }
     available = {
         name: value
@@ -226,16 +235,12 @@ def targeting_evidence(
     supporting_evidence = [
         name for name, value in available.items() if value is True
     ]
-    direct_targeting_evidence = any(
-        indicators[name] is True
-        for name in TARGETING_SIGNALS
-    )
     effective_weights = weights or _research_weights(
         "targeting", TARGETING_RESEARCH_WEIGHTS
     )
     normalized_weights = _normalized_weights(effective_weights, available) if available else None
     score = None
-    if normalized_weights is not None and direct_targeting_evidence:
+    if normalized_weights is not None:
         score = sum(
             normalized_weights[name] * float(value)
             for name, value in available.items()
@@ -245,8 +250,6 @@ def targeting_evidence(
             "computed"
             if score is not None
             else "insufficient_evidence"
-            if not direct_targeting_evidence
-            else "observed"
         ),
         "analysis_status": "completed",
         "indicators": indicators,
@@ -256,8 +259,8 @@ def targeting_evidence(
         "score_status": (
             "computed_from_available_signals"
             if score is not None
-            else "insufficient_evidence_to_confirm_target"
-            if not direct_targeting_evidence
+            else "insufficient_evidence"
+            if not available
             else "weights_not_configured"
         ),
     }
@@ -471,42 +474,70 @@ def _temporal_component(
             "status": "no_history",
             "observed_incident_count": 0,
             "lambda_per_second": None,
+            "formula": "logarithmic_dated_frequency_recency_and_time_span",
         }
     dated_timestamps = [
         timestamp
         for incident in incidents
         if (timestamp := _timestamp_seconds(incident.get("timestamp"))) is not None
     ]
+    if not dated_timestamps:
+        return {
+            "value": None,
+            "status": "timestamps_unavailable",
+            "observed_incident_count": len(incidents),
+            "dated_incident_count": 0,
+            "lambda_per_second": None,
+            "formula": "logarithmic_dated_frequency_recency_and_time_span",
+        }
     frequency_reference = _research_parameter(
-        "CHILDSAFELENS_TEMPORAL_REFERENCE_COUNT", 7, minimum=0.000001
+        "CHILDSAFELENS_TEMPORAL_REFERENCE_COUNT", 20, minimum=1
     )
-    frequency = min(len(incidents) / frequency_reference, 1.0)
+    frequency = min(
+        math.log1p(len(dated_timestamps)) / math.log1p(frequency_reference),
+        1.0,
+    )
     decay = _research_parameter(
         "CHILDSAFELENS_TEMPORAL_DECAY_PER_SECOND",
         math.log(2) / (7 * 24 * 60 * 60),
         minimum=0.000000000001,
     )
+    span_reference_days = _research_parameter(
+        "CHILDSAFELENS_TEMPORAL_SPAN_REFERENCE_DAYS", 30, minimum=0.000001
+    )
+    time_span_seconds = max(dated_timestamps) - min(dated_timestamps)
+    time_span = min(
+        time_span_seconds / (span_reference_days * 24 * 60 * 60),
+        1.0,
+    )
     frequency_weight = _research_parameter(
-        "CHILDSAFELENS_TEMPORAL_FREQUENCY_WEIGHT", 0.6, minimum=0, maximum=1
+        "CHILDSAFELENS_TEMPORAL_FREQUENCY_WEIGHT", 0.55, minimum=0, maximum=1
     )
     recency_weight = _research_parameter(
-        "CHILDSAFELENS_TEMPORAL_RECENCY_WEIGHT", 0.4, minimum=0, maximum=1
+        "CHILDSAFELENS_TEMPORAL_RECENCY_WEIGHT", 0.30, minimum=0, maximum=1
     )
-    if frequency_weight + recency_weight <= 0:
-        raise ValueError("Temporal frequency and recency weights cannot both be zero.")
+    time_span_weight = _research_parameter(
+        "CHILDSAFELENS_TEMPORAL_SPAN_WEIGHT", 0.15, minimum=0, maximum=1
+    )
+    if frequency_weight + recency_weight + time_span_weight <= 0:
+        raise ValueError("Temporal component weights cannot all be zero.")
     recency = (
         math.exp(-decay * max(0.0, now.timestamp() - max(dated_timestamps)))
-        if dated_timestamps
-        else None
+        if dated_timestamps else None
     )
-    components = {"frequency": frequency, "recency": recency}
+    components = {
+        "frequency": frequency,
+        "recency": recency,
+        "time_span": time_span,
+    }
     available_weights = {
         name: weight
-        for name, weight in (
-            ("frequency", frequency_weight),
-            ("recency", recency_weight),
-        )
-        if components[name] is not None
+        for name, weight in {
+            "frequency": frequency_weight,
+            "recency": recency_weight,
+            "time_span": time_span_weight,
+        }.items()
+        if weight > 0 and components[name] is not None
     }
     normalized_weights = _normalized_weights(available_weights, available_weights)
     value = sum(
@@ -521,30 +552,56 @@ def _temporal_component(
         "lambda_per_second": decay,
         "frequency": frequency,
         "recency": recency,
+        "time_span": time_span,
+        "time_span_days": time_span_seconds / (24 * 60 * 60),
+        "span_reference_days": span_reference_days,
         "weights": normalized_weights,
-        "missing_components": ["recency"] if recency is None else [],
-        "formula": "weighted_available_frequency_and_recency",
+        "missing_components": [],
+        "formula": "weighted_logarithmic_dated_frequency_recency_and_time_span",
+    }
+
+
+def _severity_category(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = re.sub(r"[^a-z]+", "_", value.strip().lower()).strip("_")
+    if normalized == "physical_harm_indication":
+        normalized = "physical_harm"
+    return normalized if normalized in SEVERITY_CATEGORIES else None
+
+
+def _severity_categories(values: Iterable[Any]) -> set[str]:
+    return {
+        category
+        for value in values
+        if (category := _severity_category(value)) is not None
     }
 
 
 def _incident_severity_score(incident: Mapping[str, Any]) -> float | None:
     evidence = incident.get("severity_evidence")
-    if not isinstance(evidence, Mapping):
-        return None
+    evidence = evidence if isinstance(evidence, Mapping) else {}
     indicators = evidence.get("indicators")
-    if isinstance(indicators, (list, tuple)):
-        observed = sorted(
-            {
-                value
-                for value in indicators
-                if isinstance(value, str) and value in SEVERITY_CATEGORIES
-            }
-        )
-        if observed:
-            weights = _research_weights("severity", SEVERITY_RESEARCH_WEIGHTS)
-            return sum(weights[name] for name in observed) / len(observed)
-        if evidence.get("analysis_status") == "completed":
-            return 0.0
+    observed = _severity_categories(indicators if isinstance(indicators, (list, tuple)) else [])
+    observed_categories = [incident.get("category")]
+    classifier_output = incident.get("classifierOutput")
+    if isinstance(classifier_output, Mapping):
+        output = classifier_output.get("output")
+        if isinstance(output, Mapping):
+            observed_categories.append(output.get("category"))
+            categories = output.get("categories")
+            if isinstance(categories, list):
+                observed_categories.extend(
+                    item.get("name") if isinstance(item, Mapping) else item
+                    for item in categories
+                )
+    observed.update(_severity_categories(observed_categories))
+    if observed:
+        weights = _research_weights("severity", SEVERITY_RESEARCH_WEIGHTS)
+        return sum(weights[name] for name in observed) / len(observed)
+    if evidence.get("analysis_status") == "completed":
+        return 0.0
+
     value = evidence.get("score")
     if (
         isinstance(value, (int, float))
@@ -751,59 +808,114 @@ def social_graph(
     records = [
         incident
         for incident in incidents
-        if child_id is None or incident.get("childId") == child_id
+        if child_id is None
+        or incident.get("childId", incident.get("child_id")) == child_id
     ]
     graph = nx.MultiDiGraph()
-    identified_senders: Counter[str] = Counter()
+    sender_counts: Counter[str] = Counter()
+    identified_senders: set[str] = set()
+    actors: set[str] = set()
+    interaction_count = 0
+    incoming_interaction_count = 0
+    known_incoming_count = 0
+    known_sender_interaction_count = 0
+    identity_fields = (
+        "senderId", "sender_id", "senderUsername", "sender_username",
+        "authorId", "author_id", "author", "sender",
+    )
+    recipient_fields = (
+        "receiverId", "receiver_id", "recipientId", "recipient_id",
+        "receiverUsername", "recipientUsername", "receiver", "recipient",
+    )
+
+    def participant_identity(incident: Mapping[str, Any], field_names: tuple[str, ...]) -> str | None:
+        for field_name in field_names:
+            value = incident.get(field_name)
+            if isinstance(value, Mapping):
+                value = next(
+                    (
+                        value.get(key)
+                        for key in ("id", "userId", "user_id", "username", "handle")
+                        if isinstance(value.get(key), str) and value[key].strip()
+                    ),
+                    None,
+                )
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
 
     for incident in records:
-        sender = incident.get("senderId")
-        target = incident.get("childId")
-        if (
-            isinstance(sender, str)
-            and sender.strip()
-            and isinstance(target, str)
-            and target.strip()
-        ):
-            sender = sender.strip()
-            target = target.strip()
-            identified_senders[sender] += 1
+        child = incident.get("childId", incident.get("child_id"))
+        if not isinstance(child, str) or not child.strip():
+            continue
+        child = child.strip()
+        direction = str(
+            incident.get("type", incident.get("direction", incident.get("messageType", "")))
+        ).strip().upper()
+        sender = participant_identity(incident, identity_fields)
+        recipient = participant_identity(incident, recipient_fields)
+        if direction not in {"INCOMING", "OUTGOING"}:
+            direction = "INCOMING" if sender else "OUTGOING" if recipient else ""
+        if not direction:
+            continue
+        interaction_count += 1
+        incident_id = incident.get("incidentId", incident.get("incident_id"))
+        if direction == "INCOMING":
+            incoming_interaction_count += 1
+        if sender:
+            known_sender_interaction_count += 1
+            identified_senders.add(sender)
+            sender_counts[sender] += 1
+            actors.add(sender)
+        if direction == "INCOMING" and sender:
+            known_incoming_count += 1
             graph.add_edge(
-                sender, target, child_id=target, incident_id=incident.get("incidentId")
+                sender, child, child_id=child, incident_id=incident_id,
+                direction="INCOMING",
+            )
+        elif direction == "OUTGOING" and recipient:
+            actors.add(recipient)
+            graph.add_edge(
+                child, recipient, child_id=child, incident_id=incident_id,
+                direction="OUTGOING",
+            )
+        elif direction == "OUTGOING" and sender:
+            graph.add_edge(
+                child, sender, child_id=child, incident_id=incident_id,
+                direction="OUTGOING",
             )
 
-    complete_interaction_data = all(
-        isinstance(item.get("senderId"), str)
-        and item["senderId"].strip()
-        and isinstance(item.get("childId"), str)
-        and item["childId"].strip()
-        for item in records
+    sender_identity_available = any(
+        field_name in incident
+        for incident in records
+        for field_name in identity_fields
     )
-    interaction_count = graph.number_of_edges()
+    complete_interaction_data = (
+        interaction_count > 0
+        and known_sender_interaction_count == interaction_count
+    )
     concentration = (
-        max(identified_senders.values()) / interaction_count
-        if interaction_count
+        max(sender_counts.values()) / interaction_count
+        if sender_counts and interaction_count
         else None
     )
     features: dict[str, float | int | None] = {
-        "attackers": len(identified_senders),
+        "attackers": len(identified_senders) if identified_senders else None,
         "concentration": concentration,
         "frequency": interaction_count,
     }
     reference_count = _research_parameter(
-        "CHILDSAFELENS_GRAPH_REFERENCE_COUNT", 7, minimum=0.000001
+        "CHILDSAFELENS_GRAPH_REFERENCE_COUNT", 20, minimum=1
     )
     scoring_features: dict[str, float | None] = {
         "attackers": (
-            min(len(identified_senders) / reference_count, 1.0)
-            if interaction_count
-            else None
+            min(math.log1p(len(identified_senders)) / math.log1p(reference_count), 1.0)
+            if identified_senders else None
         ),
         "concentration": concentration,
         "frequency": (
-            min(interaction_count / reference_count, 1.0)
-            if interaction_count
-            else None
+            min(math.log1p(interaction_count) / math.log1p(reference_count), 1.0)
+            if interaction_count else None
         ),
     }
     effective_weights = weights or _research_weights(
@@ -837,83 +949,93 @@ def social_graph(
             for name in normalized_weights
         )
         score_status = (
-            "computed_development_metric"
-            if complete_interaction_data
-            else "computed_from_observed_relationships"
+            "computed_from_observed_relationships"
+            if identified_senders
+            else "computed_from_observed_interactions"
         )
 
     pseudonyms = {
         sender: hmac.new(
             _GRAPH_PSEUDONYM_KEY, sender.encode("utf-8"), hashlib.sha256
         ).hexdigest()[:12]
-        for sender in identified_senders
+        for sender in actors
     }
     edges = [
         {
-            "source": pseudonyms[source],
-            "target": target,
+            "source": pseudonyms.get(source, source),
+            "target": pseudonyms.get(target, target),
             "incident_id": data.get("incident_id"),
+            "direction": data.get("direction"),
         }
         for source, target, data in graph.edges(data=True)
-        if source in pseudonyms
     ]
-    child_nodes = sorted({target for _, target in graph.edges()})
+    child_nodes = sorted({
+        incident.get("childId", incident.get("child_id"))
+        for incident in records
+        if isinstance(incident.get("childId", incident.get("child_id")), str)
+    })
+    identity_status = (
+        "available"
+        if identified_senders
+        else "no_sender_identifiers_recorded"
+        if sender_identity_available
+        else "sender_identity_fields_unavailable"
+    )
+    graph_status = (
+        "no_history"
+        if not records
+        else "available"
+        if complete_interaction_data
+        else "partial_observed_relationships"
+        if graph.number_of_edges()
+        else "observed_interactions_without_participant_ids"
+        if interaction_count
+        else "insufficient_interaction_data"
+    )
     return {
-        "status": (
-            "no_history"
-            if not records
-            else (
-                "available"
-                if complete_interaction_data
-                else "partial_observed_relationships"
-                if interaction_count
-                else "insufficient_interaction_data"
-            )
-        ),
+        "status": graph_status,
         "interaction_count": interaction_count,
-        "attacker_count": (
-            len(identified_senders) if interaction_count else None
-        ),
+        "observed_interactions": interaction_count,
+        "identified_attackers": sorted(identified_senders),
+        "attacker_identity_status": identity_status,
+        "attacker_count": len(identified_senders),
         "observed_attacker_count": len(identified_senders),
         "repeated_attacker_count": (
-            sum(count > 1 for count in identified_senders.values())
-            if interaction_count
-            else None
+            sum(count > 1 for count in sender_counts.values())
         ),
-        "incident_concentration": (
-            concentration if interaction_count else None
-        ),
+        "incident_concentration": concentration,
+        "sender_concentration": concentration,
+        "incoming_interaction_count": incoming_interaction_count,
+        "known_incoming_sender_interaction_count": known_incoming_count,
         "features": {
             "attackers": {
-                "value": features["attackers"] if interaction_count else None,
-                "observed_value": features["attackers"],
+                "value": features["attackers"],
+                "observed_value": len(identified_senders),
                 "status": (
                     "computed"
-                    if complete_interaction_data and records
-                    else "computed_from_observed_relationships"
-                    if interaction_count
-                    else ("no_history" if not records else "incomplete_interaction_data")
+                    if identified_senders
+                    else identity_status
                 ),
             },
             "concentration": {
-                "value": concentration if interaction_count else None,
+                "value": concentration,
                 "status": (
-                    "computed"
-                    if complete_interaction_data and concentration is not None
+                    "computed_from_observed_relationships"
+                    if concentration is not None and complete_interaction_data
                     else "computed_from_observed_relationships"
-                    if interaction_count and concentration is not None
-                    else ("no_history" if not records else "incomplete_interaction_data")
+                    if concentration is not None
+                    else "insufficient_sender_identity_data"
+                    if incoming_interaction_count
+                    else "no_incoming_interactions"
                 ),
             },
             "frequency": {
-                "value": features["frequency"] if interaction_count else None,
+                "value": features["frequency"] if interaction_count else 0,
                 "observed_value": features["frequency"],
                 "status": (
                     "computed"
-                    if complete_interaction_data and records
-                    else "computed_from_observed_relationships"
                     if interaction_count
-                    else ("no_history" if not records else "incomplete_interaction_data")
+                    else "no_history"
                 ),
             },
         },
@@ -930,7 +1052,8 @@ def social_graph(
         "risk_score_status": score_status,
         "nodes": [
             {"id": pseudonym, "role": "sender"}
-            for pseudonym in pseudonyms.values()
+            for actor, pseudonym in pseudonyms.items()
+            if actor in identified_senders
         ] + [{"id": target, "role": "child"} for target in child_nodes],
         "edges": edges,
     }
@@ -1276,11 +1399,6 @@ def _targeting_score_from_evidence(evidence: Mapping[str, Any]) -> float | None:
             }
     if not available:
         return None
-    if not any(
-        name in TARGETING_SIGNALS and value is True
-        for name, value in available.items()
-    ):
-        return None
     weights = _research_weights("targeting", TARGETING_RESEARCH_WEIGHTS)
     normalized = _normalized_weights(
         {name: weights[name] for name in available},
@@ -1298,12 +1416,15 @@ def _current_targeting_score(current_message: Mapping[str, Any]) -> float | None
         and 0 <= score <= 1
     ):
         return float(score)
-    evidence = current_message.get("targeting_signals")
-    if not isinstance(evidence, Mapping):
+    signals = current_message.get("targeting_signals")
+    if isinstance(signals, Mapping):
+        evidence = {"indicators": signals}
+    else:
         evidence = {
             "supporting_evidence": current_message.get("targeting_evidence", [])
         }
-    return _targeting_score_from_evidence(evidence)
+    score = _targeting_score_from_evidence(evidence)
+    return score if score is not None else 0.0
 
 
 def child_risk_assessment(
@@ -1387,43 +1508,46 @@ def child_risk_assessment(
         if current_analysis is not None
         else None
     )
-    severity_evidence = (
+    text_severity_evidence = (
         current_analysis.get("severity_evidence", [])
         if current_analysis is not None
         else []
     )
-    if not isinstance(severity_evidence, list):
-        severity_evidence = []
-    severity_evidence = [
-        item for item in severity_evidence
-        if isinstance(item, str) and item in SEVERITY_CATEGORIES
-    ]
-    severity_score = (
-        current_analysis.get("severity_score")
-        if current_analysis is not None
-        else None
+    if not isinstance(text_severity_evidence, list):
+        text_severity_evidence = []
+    current_categories: list[Any] = []
+    if current_analysis is not None:
+        current_categories.append(current_analysis.get("category"))
+        categories = current_analysis.get("categories")
+        if isinstance(categories, list):
+            current_categories.extend(
+                item.get("name") if isinstance(item, Mapping) else item
+                for item in categories
+            )
+    severity_evidence = sorted(
+        _severity_categories(text_severity_evidence)
+        | _severity_categories(current_categories)
     )
-    if (
-        current_analysis is not None
-        and severity_score is None
-    ):
-        severity_score = (
-            sum(
-                _research_weights("severity", SEVERITY_RESEARCH_WEIGHTS)[name]
-                for name in set(severity_evidence)
-            ) / len(set(severity_evidence))
-            if severity_evidence
-            else None
+    severity_score = None
+    if severity_evidence:
+        severity_weights = _research_weights(
+            "severity", SEVERITY_RESEARCH_WEIGHTS
         )
+        severity_score = sum(
+            severity_weights[name] for name in severity_evidence
+        ) / len(severity_evidence)
     if severity_score is not None:
         severity_score = _bounded_value("severity_score", float(severity_score))
-    targeting_evidence = (
+    observed_targeting_evidence = (
         current_analysis.get("targeting_evidence", [])
         if current_analysis is not None
         else []
     )
-    if not isinstance(targeting_evidence, list):
-        targeting_evidence = []
+    if not isinstance(observed_targeting_evidence, list):
+        observed_targeting_evidence = []
+    targeting_evidence = (
+        observed_targeting_evidence if targeting_score is not None else []
+    )
     latest_classifier_output = latest_incident.get("classifierOutput", {})
     if not isinstance(latest_classifier_output, Mapping):
         latest_classifier_output = {}
@@ -1438,16 +1562,7 @@ def child_risk_assessment(
         if current_analysis is not None and current_probability is not None
         else stored_classifier_probability(latest_incident)
     )
-    text_available = (
-        True
-        if current_analysis is not None
-        else bool(latest_incident.get("textEvidenceAvailable"))
-        if "textEvidenceAvailable" in latest_incident
-        else bool(
-            isinstance(latest_incident.get("messageSnippet"), str)
-            and latest_incident["messageSnippet"].strip()
-        )
-    )
+    current_text_available = current_analysis is not None
     classifier_is_dummy = (
         "dummy_development_simulation"
         if latest_incident.get("model_status") == "dummy"
@@ -1483,13 +1598,7 @@ def child_risk_assessment(
         historical_component,
         capabilities["classifier"],
     )
-    multimodal_score = (
-        classifier_probability
-        if text_available and classifier_probability is not None
-        else severity_score
-        if text_available
-        else None
-    )
+    multimodal_score = None
     current_values = {
         "P": classifier_probability,
         "D": targeting_score,
@@ -1552,6 +1661,13 @@ def child_risk_assessment(
 
     return {
         "child_id": child_id,
+        "targeting_score": targeting_score,
+        "targeting_evidence": targeting_evidence,
+        "identified_attackers": graph["identified_attackers"],
+        "identified_attacker_count": graph["attacker_count"],
+        "observed_interactions": graph["interaction_count"],
+        "sender_concentration": graph["sender_concentration"],
+        "social_risk": graph["graph_score"],
         "incident_count": len(records),
         "history_metrics": {
             "dated_incident_count": dated_incident_count,
@@ -1589,12 +1705,12 @@ def child_risk_assessment(
             "severity_evidence": severity_evidence,
         } if current_analysis is not None else None,
         "text_evidence": {
-            "status": "available" if text_available else "not_provided",
+            "status": "available" if current_text_available else "not_provided",
             "targeting": targeting_evidence,
             "severity": severity_evidence,
         },
         "multimodal_evidence": {
-            "text": "available" if text_available else "not_provided",
+            "text": "available" if current_text_available else "not_provided",
             "image": "not_provided",
             "audio": "not_provided",
             "video": "not_provided",
@@ -1653,8 +1769,7 @@ def child_risk_assessment(
             "targeting": {
                 "value": targeting_score,
                 "status": targeting_status,
-                "observed_evidence_count": len(targeting_signals),
-                "observed_incident_count": incidents_with_targeting_evidence,
+                "observed_evidence_count": len(targeting_evidence),
                 "evidence": targeting_evidence,
                 "scope": (
                     "current_message"
@@ -1665,7 +1780,7 @@ def child_risk_assessment(
             "severity": {
                 "value": severity_score,
                 "status": severity_status,
-                "observed_evidence_count": len(severity_signals),
+                "observed_evidence_count": len(severity_evidence),
                 "evidence": severity_evidence,
                 "scope": (
                     "current_message"
@@ -1675,15 +1790,13 @@ def child_risk_assessment(
             },
             "multimodal": {
                 "value": multimodal_score,
-                "status": (
-                    "computed_from_available_text"
-                    if multimodal_score is not None
-                    else "text_evidence_unavailable"
-                ),
+                "status": "no_additional_multimodal_evidence"
+                if current_text_available
+                else "current_message_unavailable",
                 **{
                     f"{modality}_status": status
                     for modality, status in {
-                        "text": "available" if text_available else "not_provided",
+                        "text": "available" if current_text_available else "not_provided",
                         "image": "not_provided",
                         "audio": "not_provided",
                         "video": "not_provided",
