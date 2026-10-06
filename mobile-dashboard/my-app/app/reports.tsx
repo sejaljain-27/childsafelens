@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, Text, ScrollView, SafeAreaView, TouchableOpacity, Dimensions, TextInput, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, Text, ScrollView, SafeAreaView, TouchableOpacity, Dimensions } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -8,9 +8,7 @@ import {
   API_BASE_URL,
   fetchResearchCapabilities,
   fetchResearchRisk,
-  analyzeCurrentMessage,
   getCurrentMessageAnalysis,
-  storeCurrentMessageAnalysis,
   authenticatedFetch,
   hasParentSession,
   type ResearchCapabilities,
@@ -186,11 +184,15 @@ export default function ReportsScreen() {
         ? currentMessageAnalysis.classification === 'Clean'
           ? 'Not applicable — Clean message'
           : currentMessageAnalysis.category ?? 'No category emitted'
-        : formatStatus(researchCapabilities?.category_classifier.status),
+        : researchRisk?.latest_incident?.category
+          ? `Latest stored message: ${researchRisk.latest_incident.category}`
+          : formatStatus(researchCapabilities?.category_classifier.status),
       detail: currentMessageAnalysis
         ? currentMessageAnalysis.classification === 'Clean'
           ? 'The current message was classified as Clean; no harmful category was emitted.'
           : `Current model category from ${currentMessageAnalysis.model_version}.`
+        : researchRisk?.latest_incident?.category
+        ? `Stored classifier category from ${researchRisk.latest_incident.model_version ?? 'the classifier'}.`
         : researchCapabilities?.category_classifier.status === 'available'
         ? researchRisk?.latest_incident?.classification === 'Clean'
           ? 'Category: Not applicable for a clean message.'
@@ -210,20 +212,22 @@ export default function ReportsScreen() {
             : currentMessageAnalysis.targeting_evidence.length
               ? `Observed (${currentMessageAnalysis.targeting_evidence.length})`
               : 'Insufficient evidence'
-        : researchRisk?.components.targeting.status === 'computed'
-        ? `${((researchRisk.components.targeting.value ?? 0) * 100).toFixed(1)}%`
-        : researchRisk?.components.targeting.status === 'observed_uncalibrated'
-          ? `Observed (${researchRisk.components.targeting.observed_evidence_count ?? 0} evidence item(s)); not calibrated`
-          : researchRisk
-            ? 'Insufficient evidence'
-            : unavailableStatus,
+        : typeof researchRisk?.latest_incident?.targeting_score === 'number'
+          ? `Latest stored message: ${(researchRisk.latest_incident.targeting_score * 100).toFixed(1)}%`
+          : researchRisk?.latest_incident
+            ? 'Latest stored message: No targeting evidence observed'
+            : researchRisk
+              ? 'No current message analysis'
+              : unavailableStatus,
       detail: childIdUnavailable
         ? 'No child-scoped query was made because the selected child ID is unavailable.'
         : currentMessageAnalysis
         ? `Current-message targeting cues: ${currentMessageAnalysis.targeting_evidence.join(', ') || 'None detected'}. Research score: ${typeof currentMessageAnalysis.targeting_score === 'number' ? `${(currentMessageAnalysis.targeting_score * 100).toFixed(1)}%` : 'not calculated'}.`
-        : researchRisk
-        ? `Evidence: ${researchRisk.components.targeting.evidence?.join(', ') || 'None observed'}. ${researchRisk.targeting_incident_count ?? 0} stored incident(s) contain targeting cues. The score uses available evidence only.`
-        : unavailableStatus,
+        : researchRisk?.latest_incident
+          ? `Latest stored message targeting cues: ${researchRisk.latest_incident.targeting_evidence.join(', ') || 'None observed'}. Historical evidence is not current-message evidence.`
+          : researchRisk
+            ? 'No current message analysis is available.'
+            : unavailableStatus,
     },
     {
       title: 'Severity evidence',
@@ -236,12 +240,18 @@ export default function ReportsScreen() {
             : currentMessageAnalysis.severity_evidence.length
               ? `Observed (${currentMessageAnalysis.severity_evidence.length})`
               : 'Insufficient evidence'
-        : 'No current message analysis',
+        : typeof researchRisk?.latest_incident?.severity_score === 'number'
+          ? `Latest stored message: ${(researchRisk.latest_incident.severity_score * 100).toFixed(1)}%${researchRisk.latest_incident.category ? ` — ${researchRisk.latest_incident.category}` : ''}`
+          : researchRisk?.latest_incident
+            ? 'Latest stored message: Insufficient evidence'
+            : 'No current message analysis',
       detail: childIdUnavailable
         ? 'No child-scoped query was made because the selected child ID is unavailable.'
         : currentMessageAnalysis
         ? `Current message evidence: ${currentMessageAnalysis.severity_evidence.join(', ') || 'None observed'}. No probability is calculated.`
-        : 'No current message severity evidence is available. Historical severity evidence is shown only in the timeline.',
+        : researchRisk?.latest_incident
+          ? `Severity is derived from the latest stored message's classifier category (${researchRisk.latest_incident.category ?? 'no category'}), not from current-message state.`
+          : 'No current message severity evidence is available. Historical severity evidence is shown only in the timeline.',
     },
     {
       title: 'Multimodal evidence',
@@ -255,9 +265,11 @@ export default function ReportsScreen() {
         ? 'No child-scoped query was made because the selected child ID is unavailable.'
         : currentTextAvailable
           ? 'Analysis completed using the current text. Image, audio, and video were skipped because they were not provided.'
-          : `Text: ${currentMessageAnalysis
-            ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
-            : researchRisk?.multimodal_evidence?.text === 'available' ? 'Available' : 'Not provided'} · Image: Not provided · Audio: Not provided · Video: Not provided. Optional media analysis is not implemented.`,
+          : researchRisk?.latest_incident
+            ? `Latest stored message — Text: ${researchRisk.latest_incident.text_status === 'available' ? 'Available' : 'Not provided'} · Image: Not provided · Audio: Not provided · Video: Not provided.`
+            : `Text: ${currentMessageAnalysis
+              ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
+              : researchRisk?.multimodal_evidence?.text === 'available' ? 'Available' : 'Not provided'} · Image: Not provided · Audio: Not provided · Video: Not provided. Optional media analysis is not implemented.`,
     },
     {
       title: 'Temporal repetition',
@@ -331,8 +343,11 @@ export default function ReportsScreen() {
       icon: 'lightbulb',
       status: researchRisk?.explanation.status === 'available'
         ? 'Available'
-        : `Not available — ${formatStatus(researchRisk?.explanation.status)}`,
-      detail: 'SHAP values are shown only when an actual trained risk-fusion model is available.',
+        : researchRisk?.risk_fusion_model?.configured
+          ? 'SHAP unavailable — no TreeSHAP explanation is available for the configured model.'
+          : 'SHAP unavailable — no independently labeled child-risk fusion training data is configured.',
+      detail: researchRisk?.risk_fusion_model?.target_message
+        ?? 'SHAP unavailable — no independently labeled child-risk fusion training data is configured.',
     },
   ];
   return (

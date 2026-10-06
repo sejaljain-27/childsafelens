@@ -154,6 +154,61 @@ def _issue_access_token(email: str) -> dict[str, str | int]:
     }
 
 
+def _issue_prediction_token(prediction: dict[str, Any], text: str) -> str:
+    now = int(time.time())
+    claims = {
+        "exp": now + 900,
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "prediction": prediction,
+    }
+    payload = _base64url(
+        json.dumps(claims, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    )
+    signature = _base64url(
+        hmac.new(_auth_secret(), payload.encode("ascii"), hashlib.sha256).digest()
+    )
+    return f"{payload}.{signature}"
+
+
+def _verified_prediction(token: str, text: str) -> dict[str, Any]:
+    try:
+        payload, signature = token.split(".", 1)
+        expected = _base64url(
+            hmac.new(_auth_secret(), payload.encode("ascii"), hashlib.sha256).digest()
+        )
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("Invalid prediction signature.")
+        claims = json.loads(
+            base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        )
+        prediction = claims["prediction"]
+        if (
+            not isinstance(claims.get("exp"), int)
+            or claims["exp"] <= int(time.time())
+            or not isinstance(claims.get("text_sha256"), str)
+            or not hmac.compare_digest(
+                claims["text_sha256"],
+                hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            )
+            or not isinstance(prediction, dict)
+            or prediction.get("model_status") != "real"
+            or prediction.get("model_version") != CASCADE_MODEL_VERSION
+        ):
+            raise ValueError("Prediction token is expired or does not match this message.")
+        return prediction
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as error:
+        raise HTTPException(
+            status_code=422,
+            detail="The supplied classifier result is invalid or does not match the message.",
+        ) from error
+
+
 def require_parent(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> str:
@@ -211,6 +266,7 @@ class PredictResponse(BaseModel):
     decision_override: str | None = None
     cyberbullying: bool = False
     p_bullying: float | None = None
+    prediction_token: str | None = None
     gate_threshold: float | None = None
     categories: list[dict[str, str | float]] = Field(default_factory=list)
     incident_created: bool = False
@@ -264,6 +320,7 @@ class IncidentCreate(BaseModel):
     timestamp: int
     status: str = "PENDING_PARENT_REVIEW"
     senderId: str | None = None
+    predictionToken: str | None = Field(default=None, max_length=8192)
     childUsername: str | None = None
     replyToChild: bool | None = None
     personalReference: bool | None = None
@@ -379,15 +436,21 @@ def predict(req: PredictRequest):
         if result["model_status"] == "dummy"
         else "unavailable"
     )
+    is_risky = result.get("is_risky")
+    if is_risky is None:
+        is_risky = result.get("cyberbullying")
+    if is_risky is None:
+        is_risky = result.get("classification_label") == "Bullying"
     return PredictResponse(
         classification=result.get(
             "classification",
-            "CYBERBULLYING" if result.get("is_risky") else "CLEAN",
+            "CYBERBULLYING" if is_risky else "CLEAN",
         ),
         model_classification=result.get("model_classification", result.get("classification_label")),
         decision_override=result.get("decision_override"),
-        cyberbullying=result.get("cyberbullying", result["is_risky"]),
+        cyberbullying=result.get("cyberbullying", is_risky),
         p_bullying=result.get("p_bullying", result["risk_score"]),
+        prediction_token=_issue_prediction_token(result, req.text),
         gate_threshold=result.get("gate_threshold"),
         categories=result.get("categories", []),
         incident_created=False,
@@ -405,8 +468,9 @@ def predict(req: PredictRequest):
             [],
             weights=configured_weights("severity", SEVERITY_CATEGORIES),
             text=req.text,
+            category=result.get("category"),
         ),
-        is_risky=result["is_risky"],
+        is_risky=is_risky,
         label=result["label"],
         stage1_label=result["stage1_label"],
         stage1_status=result["stage1_status"],
@@ -560,16 +624,19 @@ def create_incident(
 ):
     owner_email = _assert_parent_scope(inc.parentEmail, authenticated_email)
     classification_text = inc.messageText or inc.messageSnippet
-    try:
-        prediction = predict_text(classification_text)
-    except ModelUnavailableError as error:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "classification_status": "MODEL_UNAVAILABLE",
-                "message": "The supplied cyberbullying model is unavailable.",
-            },
-        ) from error
+    if inc.predictionToken:
+        prediction = _verified_prediction(inc.predictionToken, classification_text)
+    else:
+        try:
+            prediction = predict_text(classification_text)
+        except ModelUnavailableError as error:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "classification_status": "MODEL_UNAVAILABLE",
+                    "message": "The supplied cyberbullying model is unavailable.",
+                },
+            ) from error
     if (
         prediction["model_status"] != "real"
         or prediction["model_version"] != CASCADE_MODEL_VERSION
@@ -606,6 +673,12 @@ def create_incident(
         child_username=inc.childUsername,
         reply_to_child=inc.replyToChild,
         personal_reference=inc.personalReference,
+        recipient_is_child=inc.type.upper() == "INCOMING",
+        sender_to_child_relationship=(
+            True
+            if inc.type.upper() == "INCOMING" and inc.senderId
+            else None
+        ),
         weights=configured_weights("targeting", TARGETING_FEATURES),
     )
     severity = severity_evidence(
@@ -613,6 +686,7 @@ def create_incident(
         weights=configured_weights("severity", SEVERITY_CATEGORIES),
         evidence_provided="severityIndicators" in inc.model_fields_set,
         text=classification_text,
+        category=prediction.get("category"),
     )
     incident_score = current_incident_score(
         classifier_probability=prediction.get("risk_score"),
@@ -731,6 +805,24 @@ def create_incident(
         },
         "modelVersion": prediction.get("model_version"),
         "modelVersions": {"classifier": prediction.get("model_version")},
+        "messageAnalysis": {
+            "classification": prediction.get("classification_label"),
+            "probability": prediction.get(
+                "p_bullying", prediction.get("risk_score")
+            ),
+            "category": prediction.get("category"),
+            "categories": prediction.get("categories", []),
+            "model_version": prediction.get("model_version"),
+            "text_status": (
+                "available" if classification_text.strip() else "not_provided"
+            ),
+            "targeting_evidence": targeting["supporting_evidence"],
+            "targeting_score": targeting["score"],
+            "targeting_signals": targeting["indicators"],
+            "severity_evidence": severity["indicators"],
+            "severity_score": severity["score"],
+            "analyzed_at": classification_timestamp,
+        },
     }
     _save_incident(incident_data)
     if _classification_debug:
@@ -756,6 +848,7 @@ def create_incident(
         "p_bullying": prediction["risk_score"],
         "gate_threshold": prediction.get("gate_threshold"),
         "categories": prediction.get("categories", []),
+        "message_analysis": incident_data["messageAnalysis"],
     }
 
 

@@ -302,8 +302,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             message = text,
             riskScore = score,
             riskLevel = policy.riskLevel,
-            category = "potential_cyberbullying",
+            category = result.category ?: "potential_cyberbullying",
             packageName = "com.childsafelens.demo",
+            predictionToken = result.predictionToken,
             status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
             onDecisionReceived = { decision, _ ->
                 viewModelScope.launch(Dispatchers.Main) {
@@ -481,8 +482,9 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             message = text,
             riskScore = score,
             riskLevel = policy.riskLevel,
-            category = "potential_cyberbullying",
+            category = result.category ?: "potential_cyberbullying",
             packageName = "com.childsafelens.demo",
+            predictionToken = result.predictionToken,
             status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
             onDecisionReceived = { decision, _ ->
                 viewModelScope.launch(Dispatchers.Main) {

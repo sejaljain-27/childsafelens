@@ -43,6 +43,7 @@ object IncidentManager {
         riskLevel: RiskPolicyManager.RiskLevel,
         category: String,
         packageName: String,
+        predictionToken: String? = null,
         status: String = "PENDING_PARENT_REVIEW",
         onDecisionReceived: (String, String?) -> Unit = { _, _ -> }
     ): String {
@@ -78,7 +79,12 @@ object IncidentManager {
                 try {
                     database.incidentDao().insert(entity)
                     Log.d(TAG, "Incident saved locally: $incidentId [parent=$parentEmail, child=$childName, status=$status]")
-                    val synced = transmitToBackend(entity, message, accessToken)
+                    val synced = transmitToBackend(
+                        entity,
+                        message,
+                        accessToken,
+                        predictionToken,
+                    )
                     if (status == "PENDING_PARENT_REVIEW" && synced) {
                         pollForDecision(incidentId, accessToken, onDecisionReceived)
                     }
@@ -96,7 +102,8 @@ object IncidentManager {
     private fun transmitToBackend(
         incident: IncidentEntity,
         messageText: String,
-        accessToken: String
+        accessToken: String,
+        predictionToken: String?,
     ): Boolean {
         val connection = try {
             (URL("$BASE_URL/incidents").openConnection() as HttpURLConnection).apply {
@@ -128,6 +135,9 @@ object IncidentManager {
                 put("packageName", incident.packageName)
                 put("timestamp", incident.timestamp)
                 put("status", incident.status)
+                if (!predictionToken.isNullOrBlank()) {
+                    put("predictionToken", predictionToken)
+                }
             }
             OutputStreamWriter(connection.outputStream).use { it.write(json.toString()) }
             val responseCode = connection.responseCode

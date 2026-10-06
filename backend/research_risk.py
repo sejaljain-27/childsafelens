@@ -27,6 +27,8 @@ TARGETING_SIGNALS = (
     "child_name_reference",
     "reply_to_child",
     "personal_reference",
+    "recipient_is_child",
+    "sender_to_child_relationship",
     "second_person_reference",
     "direct_personal_attack",
 )
@@ -199,6 +201,8 @@ def targeting_evidence(
     reply_to_child: bool | None = None,
     personal_reference: bool | None = None,
     weights: Mapping[str, float] | None = None,
+    recipient_is_child: bool | None = None,
+    sender_to_child_relationship: bool | None = None,
 ) -> dict[str, Any]:
     """Analyze available text/context without treating absent context as negative."""
     direct_mention = None
@@ -224,6 +228,8 @@ def targeting_evidence(
         "child_name_reference": name_reference,
         "reply_to_child": reply_to_child,
         "personal_reference": personal_reference,
+        "recipient_is_child": recipient_is_child,
+        "sender_to_child_relationship": sender_to_child_relationship,
         "second_person_reference": bool(_SECOND_PERSON_REFERENCE.search(text)),
         "direct_personal_attack": personal_attack,
     }
@@ -271,6 +277,7 @@ def severity_evidence(
     weights: Mapping[str, float] | None = None,
     evidence_provided: bool | None = None,
     text: str | None = None,
+    category: Any = None,
 ) -> dict[str, Any]:
     text_evidence = {
         category: [
@@ -284,6 +291,7 @@ def severity_evidence(
         for category, cues in text_evidence.items()
         if cues
     }
+    category_indicators = _severity_categories([category])
     observed = sorted(
         {
             value
@@ -291,6 +299,7 @@ def severity_evidence(
             if value in SEVERITY_CATEGORIES
         }
         | text_indicators
+        | category_indicators
     )
     has_evidence_source = (
         evidence_provided is True
@@ -300,15 +309,23 @@ def severity_evidence(
     score_weights = weights or _research_weights(
         "severity", SEVERITY_RESEARCH_WEIGHTS
     )
+    category_name = _severity_category(category)
     score = (
-        sum(
-            _bounded_value(
-                f"severity_weight_{category}", float(score_weights[category])
-            )
-            for category in observed
-        ) / len(observed)
-        if observed and all(category in score_weights for category in observed)
-        else None
+        _bounded_value(
+            f"severity_weight_{category_name}",
+            float(score_weights[category_name]),
+        )
+        if category_name in score_weights
+        else (
+            sum(
+                _bounded_value(
+                    f"severity_weight_{name}", float(score_weights[name])
+                )
+                for name in observed
+            ) / len(observed)
+            if observed and all(name in score_weights for name in observed)
+            else None
+        )
     )
     return {
         "status": "available" if observed else "insufficient_evidence",
@@ -326,12 +343,15 @@ def severity_evidence(
             for source, available in (
                 ("text", text is not None),
                 ("provided_indicators", evidence_provided is True),
+                ("current_category", category_name is not None),
             )
             if available
         ],
         "score": score,
         "score_status": (
-            "research_weighted_severity"
+            "calculated_from_current_category"
+            if score is not None and category_name is not None
+            else "research_weighted_severity"
             if score is not None and observed
             else "no_severity_indicators"
             if score == 0
@@ -596,8 +616,23 @@ def _incident_severity_score(incident: Mapping[str, Any]) -> float | None:
                     for item in categories
                 )
     observed.update(_severity_categories(observed_categories))
+    weights = _research_weights("severity", SEVERITY_RESEARCH_WEIGHTS)
+    message_analysis = incident.get("messageAnalysis")
+    if isinstance(message_analysis, Mapping):
+        message_category = _severity_category(message_analysis.get("category"))
+        if message_category is not None:
+            return weights[message_category]
+    classifier_output = incident.get("classifierOutput")
+    if isinstance(classifier_output, Mapping):
+        output = classifier_output.get("output")
+        if isinstance(output, Mapping):
+            output_category = _severity_category(output.get("category"))
+            if output_category is not None:
+                return weights[output_category]
+    primary_category = _severity_category(incident.get("category"))
+    if primary_category is not None:
+        return weights[primary_category]
     if observed:
-        weights = _research_weights("severity", SEVERITY_RESEARCH_WEIGHTS)
         return sum(weights[name] for name in observed) / len(observed)
     if evidence.get("analysis_status") == "completed":
         return 0.0
@@ -1529,7 +1564,20 @@ def child_risk_assessment(
         | _severity_categories(current_categories)
     )
     severity_score = None
-    if severity_evidence:
+    primary_severity_category = next(
+        (
+            category
+            for value in current_categories
+            if (category := _severity_category(value)) is not None
+        ),
+        None,
+    )
+    if primary_severity_category is not None:
+        severity_weights = _research_weights(
+            "severity", SEVERITY_RESEARCH_WEIGHTS
+        )
+        severity_score = severity_weights[primary_severity_category]
+    elif severity_evidence:
         severity_weights = _research_weights(
             "severity", SEVERITY_RESEARCH_WEIGHTS
         )
@@ -1600,7 +1648,7 @@ def child_risk_assessment(
     )
     multimodal_score = None
     current_values = {
-        "P": classifier_probability,
+        "P": current_probability,
         "D": targeting_score,
         "S": severity_score,
         "M": multimodal_score,
@@ -1630,24 +1678,43 @@ def child_risk_assessment(
     latest_severity_evidence = latest_severity.get("indicators", [])
     if not isinstance(latest_severity_evidence, list):
         latest_severity_evidence = []
-    risk_fusion_features = {
-        "incident_score": latest_incident.get("incident_score"),
-        "temporal_risk": temporal_component.get("value"),
-        "escalation": escalation_component.get("value"),
-        "social_graph": graph.get("graph_score"),
-        "historical": historical_feature.get("value"),
-    }
+    stored_message_analysis = latest_incident.get("messageAnalysis", {})
+    if not isinstance(stored_message_analysis, Mapping):
+        stored_message_analysis = {}
+    latest_targeting_score = stored_message_analysis.get(
+        "targeting_score", latest_incident.get("targeting_score")
+    )
+    if (
+        isinstance(latest_targeting_score, bool)
+        or not isinstance(latest_targeting_score, (int, float))
+        or not math.isfinite(latest_targeting_score)
+        or not 0 <= latest_targeting_score <= 1
+    ):
+        latest_targeting_score = None
+    latest_severity_score = _incident_severity_score(latest_incident)
+    if (
+        not latest_severity_evidence
+        and (latest_category := _severity_category(latest_incident.get("category")))
+    ):
+        latest_severity_evidence = [latest_category]
+    risk_fusion_features = dict(current_values)
     risk_fusion_result = risk_fusion_service.predict(risk_fusion_features)
     risk_fusion_explanation = (
         risk_fusion_service.explain(risk_fusion_features)
         if risk_fusion_result["score"] is not None
         else {
             "status": "unavailable",
-            "message": "Explanation unavailable",
+            "message": risk_fusion_result.get(
+                "message", "Explanation unavailable"
+            ),
             "missing_features": risk_fusion_result["missing_features"],
         }
     )
     deterministic_fusion = deterministic_risk_fusion(current_values)
+    deterministic_feature_vector = [
+        {"name": name, "value": current_values[name]}
+        for name in FUSION_FEATURES
+    ]
     model_crs = (
         round(risk_fusion_result["score"] * 100)
         if risk_fusion_result["score"] is not None
@@ -1694,6 +1761,16 @@ def child_risk_assessment(
             "model_version": latest_model_version,
             "targeting_evidence": latest_targeting_evidence,
             "severity_evidence": latest_severity_evidence,
+            "targeting_score": latest_targeting_score,
+            "severity_score": latest_severity_score,
+            "text_status": (
+                "available"
+                if latest_incident.get("textEvidenceAvailable") is True
+                else "not_provided"
+            ),
+            "content_type": latest_incident.get("contentType") or "text",
+            "sender_id": latest_incident.get("senderId"),
+            "source": "latest_stored_message",
         } if latest_incident else None,
         "current_message": {
             "classification": current_analysis.get("classification"),
@@ -1702,7 +1779,10 @@ def child_risk_assessment(
             "model_version": current_analysis.get("model_version"),
             "text_status": "available",
             "targeting_evidence": targeting_evidence,
+            "targeting_score": targeting_score,
             "severity_evidence": severity_evidence,
+            "severity_score": severity_score,
+            "source": "current_message",
         } if current_analysis is not None else None,
         "text_evidence": {
             "status": "available" if current_text_available else "not_provided",
@@ -1737,6 +1817,8 @@ def child_risk_assessment(
             "explanation": risk_fusion_explanation,
             "deterministic_research_fusion": deterministic_fusion,
         },
+        "risk_fusion_model": risk_fusion_service.status(),
+        "deterministic_feature_vector": deterministic_feature_vector,
         "deterministic_contributions": deterministic_fusion[
             "feature_contributions"
         ],

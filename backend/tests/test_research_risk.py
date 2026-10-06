@@ -13,6 +13,7 @@ from research_risk import (
     escalation_score,
     historical_risk,
     _historical_component,
+    child_risk_assessment,
     risk_state,
     severity_evidence,
     social_graph,
@@ -140,6 +141,103 @@ class ResearchRiskTests(unittest.TestCase):
         self.assertEqual(result["status"], "insufficient_evidence")
         self.assertEqual(result["indicators"], [])
         self.assertIsNone(result["score"])
+
+    def test_current_category_is_used_for_severity_without_averaging_text_cues(self):
+        result = severity_evidence(
+            ["insult"],
+            text="You are stupid.",
+            category="Blackmail",
+        )
+
+        self.assertEqual(result["score"], 0.8)
+        self.assertEqual(result["score_status"], "calculated_from_current_category")
+        self.assertEqual(set(result["indicators"]), {"insult", "blackmail"})
+
+    def test_current_blackmail_evidence_is_separate_from_stored_incident_history(self):
+        now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        incidents = [
+            {
+                "incidentId": "historical-blackmail",
+                "childId": "child-1",
+                "timestamp": int((now - timedelta(days=1)).timestamp() * 1000),
+                "classification": "CYBERBULLYING",
+                "category": "Blackmail",
+                "riskScore": 0.93,
+                "classifierOutput": {
+                    "modelVersion": "cyberbullying-cascade-v4",
+                    "output": {
+                        "label": "Bullying",
+                        "probability": 0.93,
+                        "category": "Blackmail",
+                    },
+                },
+                "textEvidenceAvailable": True,
+                "severity_evidence": {"indicators": []},
+                "targeting_evidence": {
+                    "score": 0.5,
+                    "supporting_evidence": ["second_person_reference"],
+                },
+            }
+        ]
+        current_message = {
+            "classification": "Bullying",
+            "probability": 0.931427538394928,
+            "category": "Blackmail",
+            "model_version": "cyberbullying-cascade-v4",
+            "text_status": "available",
+            "targeting_evidence": [],
+            "severity_evidence": [],
+            "targeting_signals": {"second_person_reference": False},
+        }
+
+        assessment = child_risk_assessment(
+            incidents,
+            "child-1",
+            now,
+            current_message=current_message,
+        )
+
+        self.assertEqual(assessment["current_message"]["classifier_probability"], 0.931427538394928)
+        self.assertEqual(assessment["current_message"]["severity_score"], 0.8)
+        self.assertEqual(assessment["components"]["severity"]["value"], 0.8)
+        self.assertEqual(assessment["latest_incident"]["severity_score"], 0.8)
+        self.assertEqual(
+            {item["name"]: item["value"] for item in assessment["deterministic_feature_vector"]}["S"],
+            0.8,
+        )
+
+    def test_latest_stored_category_does_not_become_current_severity_or_classifier_input(self):
+        now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        incident = {
+            "incidentId": "stored-blackmail",
+            "childId": "child-1",
+            "timestamp": int(now.timestamp() * 1000),
+            "classification": "CYBERBULLYING",
+            "category": "Blackmail",
+            "riskScore": 0.93,
+            "classifierOutput": {
+                "modelVersion": "cyberbullying-cascade-v4",
+                "output": {
+                    "label": "Bullying",
+                    "probability": 0.93,
+                    "category": "Blackmail",
+                },
+            },
+            "textEvidenceAvailable": True,
+            "severity_evidence": {"indicators": []},
+        }
+
+        assessment = child_risk_assessment([incident], "child-1", now)
+
+        values = {
+            item["name"]: item["value"]
+            for item in assessment["deterministic_feature_vector"]
+        }
+        self.assertIsNone(assessment["current_message"])
+        self.assertIsNone(assessment["components"]["severity"]["value"])
+        self.assertIsNone(values["P"])
+        self.assertIsNone(values["S"])
+        self.assertEqual(assessment["latest_incident"]["severity_score"], 0.8)
 
     def test_severity_score_requires_explicit_evidence_and_configured_weights(self):
         env = {

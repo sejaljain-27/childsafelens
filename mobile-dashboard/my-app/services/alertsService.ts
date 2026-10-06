@@ -451,6 +451,8 @@ export interface ResearchRisk {
     severity_evidence: string[];
   } | null;
   risk_fusion?: {
+    feature_order?: string[];
+    message?: string;
     explanation?: {
       status: string;
       message: string;
@@ -460,6 +462,14 @@ export interface ResearchRisk {
       model_output?: string;
       additivity_verified?: boolean;
     };
+  };
+  risk_fusion_model?: {
+    configured: boolean;
+    model_type: string;
+    explainer: string;
+    model_version: string | null;
+    feature_order: string[];
+    target_message: string;
   };
   targeting_incident_count?: number;
   targeting_cues_per_incident?: number | null;
@@ -472,6 +482,12 @@ export interface ResearchRisk {
     model_version: string | null;
     targeting_evidence: string[];
     severity_evidence: string[];
+    targeting_score: number | null;
+    severity_score: number | null;
+    text_status: 'available' | 'not_provided';
+    content_type: string;
+    sender_id: string | null;
+    source: 'latest_stored_message';
   } | null;
   text_evidence?: {
     status: string;

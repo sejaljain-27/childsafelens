@@ -218,8 +218,9 @@ class NudgeAccessibilityService : AccessibilityService() {
             message = text,
             riskScore = result.riskScore,
             riskLevel = policy.riskLevel,
-            category = "potential_cyberbullying",
+            category = result.category ?: "potential_cyberbullying",
             packageName = packageName,
+            predictionToken = result.predictionToken,
             status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
             onDecisionReceived = onDecisionReceived
         )

@@ -13,13 +13,18 @@ from typing import Any
 
 
 FEATURE_ORDER = (
-    "incident_score",
-    "temporal_risk",
-    "escalation",
-    "social_graph",
-    "historical",
+    "P",
+    "D",
+    "S",
+    "M",
+    "T",
+    "E",
+    "G",
+    "H",
 )
-TARGET_REQUIRED_MESSAGE = "XGBoost requires a research-defined training target."
+TARGET_REQUIRED_MESSAGE = (
+    "SHAP unavailable: no independently labeled child-risk fusion training data is configured."
+)
 DEFAULT_MODEL_PATH = Path(__file__).parent / "risk_models" / "child_risk_fusion.ubj"
 TARGET_VALIDATION_ENV = "CHILDSAFELENS_RISK_TRAINING_TARGET_VALIDATED"
 EXPLANATION_UNAVAILABLE = "Explanation unavailable"
@@ -218,12 +223,16 @@ class RiskFusionService:
             status = self._explanation_status
         return {
             "status": status,
+            "configured": self._predictor is not None,
+            "model_type": "XGBoost",
             "dependency_installed": importlib.util.find_spec("shap") is not None,
-            "method": "SHAP TreeExplainer",
+            "method": "TreeSHAP",
             "model_output": "raw_margin",
             "message": (
                 "SHAP explanations are available for the loaded XGBoost model."
                 if status == "available"
+                else TARGET_REQUIRED_MESSAGE
+                if self._predictor is None
                 else EXPLANATION_UNAVAILABLE
             ),
         }
@@ -233,7 +242,11 @@ class RiskFusionService:
         if self._predictor is None or self._explainer is None or missing:
             return {
                 "status": "unavailable",
-                "message": EXPLANATION_UNAVAILABLE,
+                "message": (
+                    TARGET_REQUIRED_MESSAGE
+                    if self._predictor is None
+                    else EXPLANATION_UNAVAILABLE
+                ),
                 "missing_features": missing,
             }
 
@@ -258,6 +271,9 @@ class RiskFusionService:
     def status(self) -> dict[str, Any]:
         return {
             "status": self._status,
+            "configured": self._predictor is not None,
+            "model_type": "XGBoost",
+            "explainer": "TreeSHAP",
             "model_version": self.model_version,
             "model_loaded": self._predictor is not None,
             "training_target_available": self.target_validated,

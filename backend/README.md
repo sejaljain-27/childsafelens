@@ -182,10 +182,22 @@ normalized to that parent's matching child-profile ID before storage. Research
 views use parent-scoped incidents with a Bullying or Cyberbullying result
 recorded by the classifier, including legacy records whose classifier label is
 stored under `classifierOutput`. The `/predict` response includes the supplied
-message probability and text-derived targeting/severity evidence without
-creating an incident. The dashboard shares that transient analysis between its
-research views; only cascade-v4 probability is displayed, and it is not a
-child-risk score.
+message probability, category, text-derived evidence, and a short-lived signed
+token bound to the exact message text. Android passes that token to
+`/incidents`, allowing the incident to persist the same backend prediction
+without running the classifier a second time. Full message text is not added to
+the persistent current-analysis object. When no explicit current-message
+analysis is active, the dashboard labels classifier, targeting, severity, and
+modality details from the newest incident as “Latest stored message”; those
+historical details do not populate the current-message risk features.
+
+Current severity uses the current cascade category when it is available, with
+the configured research severity mapping. Current targeting is calculated
+independently from text and any supplied message/child relationship context.
+An incoming incident records the child as the recipient; sender identifiers
+are counted only when actually present in the incident request. A zero sender
+count and unavailable concentration are retained when no sender IDs were
+recorded.
 
 `POST /analyze/audio`, `/analyze/image`, and `/analyze/video` accept a JSON
 `media_reference` and return HTTP 503 with modality-specific
@@ -204,13 +216,16 @@ repository does not train a risk model from those message labels or dummy
 classifier results. Inspection found 18,131 rows in
 `ChildSafeLens_Final_Dataset (1).csv`, 10,000 in
 `hinglish_cyberbullying_dataset_10k_userwords (1).csv`, and 44,148 in
-`ipd_merged_dataset.csv`; their labels are message-level bullying/non-bullying,
-and none contains child IDs.
+`ipd_merged_dataset.csv`, plus 40,392 in `cyberbullying_dataset_.csv`; their
+labels are message-level bullying/non-bullying, and none contains child IDs.
 
-The optional XGBoost interface is in `risk_fusion.py`. It consumes, in exact
-order, `[incident_score, temporal_risk, escalation, social_graph, historical]`
-and refuses prediction if a component is missing. It loads no artifact by
-default and reports: "XGBoost requires a research-defined training target."
+The optional XGBoost interface is in `risk_fusion.py`. Its feature order is
+`[P, D, S, M, T, E, G, H]` and it refuses prediction if a component is
+missing. No independently labeled child-risk fusion dataset is configured:
+the available CSV labels are message-level bullying/non-bullying labels, not
+child-level outcomes. The system does not train on deterministic CRS or
+classifier labels and reports: "SHAP unavailable: no independently labeled
+child-risk fusion training data is configured."
 Loading requires a declared target ID and an explicitly validated target
 (`CHILDSAFELENS_RISK_TRAINING_TARGET`,
 `CHILDSAFELENS_RISK_TRAINING_TARGET_VALIDATED=true`), plus a compatible
@@ -222,8 +237,8 @@ configured model's output remains the model-based CRS; otherwise the
 deterministic research fusion below supplies CRS when at least one valid
 feature is available.
 
-When both the model and SHAP are available, the same XGBoost Booster/input is
-explained with `shap.TreeExplainer`. Returned feature contributions are actual
+When an independently trained compatible model and SHAP are available, the
+same XGBoost Booster/input is explained with `shap.TreeExplainer`. Returned feature contributions are actual
 TreeSHAP values in the model's raw-margin space:
 `raw_margin = base_value + sum(feature_contributions)`. The response includes
 each ordered feature/value pair and is returned only when the contributions

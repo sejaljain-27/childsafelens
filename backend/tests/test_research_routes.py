@@ -243,10 +243,76 @@ class ResearchRouteTests(unittest.TestCase):
             result.targeting_evidence["supporting_evidence"],
         )
         self.assertIn("threat", result.severity_evidence["indicators"])
+        self.assertEqual(result.severity_evidence["score"], 0.7)
+        self.assertTrue(result.prediction_token)
         self.assertFalse(any(
             incident.get("messageSnippet") == "Aarav, I will hurt you"
             for incident in main._incidents.values()
         ))
+
+    def test_incident_creation_reuses_the_signed_prediction_and_persists_analysis(self):
+        text = "You are blackmailing me."
+        prediction = {
+            **self._bullying_prediction(),
+            "risk_score": 0.931427538394928,
+            "p_bullying": 0.931427538394928,
+            "category": "Blackmail",
+            "categories": [{"name": "Blackmail", "prob": 0.91}],
+        }
+        with patch("main.predict_text", return_value=prediction):
+            result = main.predict(main.PredictRequest(text=text))
+
+        incident = main.IncidentCreate(
+            incidentId="signed-prediction-incident",
+            parentEmail="prediction-parent@example.com",
+            childId="prediction-child",
+            childName="Child",
+            type="INCOMING",
+            messageSnippet=text,
+            messageText=text,
+            riskScore=0.1,
+            riskLevel="low_risk",
+            category="untrusted-client-category",
+            packageName="test",
+            timestamp=1_791_138_000_000,
+            predictionToken=result.prediction_token,
+        )
+        with patch("main.predict_text", side_effect=AssertionError("prediction rerun")):
+            response = main.create_incident(incident)
+
+        stored = self.store.get_incident("signed-prediction-incident")
+        self.assertEqual(response["p_bullying"], 0.931427538394928)
+        self.assertEqual(stored["classifierOutput"]["output"]["category"], "Blackmail")
+        self.assertEqual(stored["messageAnalysis"]["probability"], 0.931427538394928)
+        self.assertEqual(stored["messageAnalysis"]["severity_score"], 0.8)
+        self.assertEqual(stored["severity_evidence"]["score"], 0.8)
+        self.assertEqual(stored["messageAnalysis"]["text_status"], "available")
+        self.assertIn("recipient_is_child", stored["messageAnalysis"]["targeting_signals"])
+        self.assertTrue(stored["messageAnalysis"]["targeting_signals"]["recipient_is_child"])
+
+    def test_prediction_token_cannot_be_reused_for_different_message_text(self):
+        with patch("main.predict_text", return_value=self._bullying_prediction()):
+            result = main.predict(main.PredictRequest(text="original message"))
+
+        incident = main.IncidentCreate(
+            incidentId="mismatched-prediction-incident",
+            parentEmail="prediction-parent@example.com",
+            childId="prediction-child",
+            childName="Child",
+            type="INCOMING",
+            messageSnippet="changed message",
+            messageText="changed message",
+            riskScore=0.1,
+            riskLevel="low_risk",
+            category="ignored",
+            packageName="test",
+            timestamp=1_791_138_000_000,
+            predictionToken=result.prediction_token,
+        )
+        with self.assertRaises(main.HTTPException) as error:
+            main.create_incident(incident)
+
+        self.assertEqual(error.exception.status_code, 422)
 
     def test_clean_current_text_completes_deterministic_risk_without_creating_incident(self):
         email = "current-message-parent@example.com"
@@ -346,13 +412,13 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(status["history_storage"], "sqlite")
         self.assertEqual(
             status["explainability"]["message"],
-            "Explanation unavailable",
+            "SHAP unavailable: no independently labeled child-risk fusion training data is configured.",
         )
         self.assertEqual(status["risk_fusion"]["status"], "training_target_unavailable")
         self.assertFalse(status["risk_fusion"]["training_target_available"])
         self.assertEqual(
             status["risk_fusion"]["target_message"],
-            "XGBoost requires a research-defined training target.",
+            "SHAP unavailable: no independently labeled child-risk fusion training data is configured.",
         )
 
     def test_log_event_preserves_dummy_simulation_metadata(self):
@@ -486,7 +552,7 @@ class ResearchRouteTests(unittest.TestCase):
         )
         self.assertEqual(
             persisted_snapshot["shapExplanation"]["message"],
-            "Explanation unavailable",
+            "SHAP unavailable: no independently labeled child-risk fusion training data is configured.",
         )
         self.assertIsNotNone(persisted_snapshot["riskAssessmentTimestamp"])
 
@@ -801,7 +867,7 @@ class ResearchRouteTests(unittest.TestCase):
             stored["targeting_evidence"]["status"],
             "computed",
         )
-        self.assertAlmostEqual(stored["targeting_evidence"]["score"], 2 / 3)
+        self.assertAlmostEqual(stored["targeting_evidence"]["score"], 0.75)
         self.assertEqual(
             stored["targeting_evidence"]["indicators"]["second_person_reference"],
             True,
@@ -1009,7 +1075,7 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertIn(assessment["risk_state"], {"SAFE", "WARNING", "HIGH", "CRITICAL"})
         self.assertEqual(assessment["social_graph"]["attacker_count"], 1)
         self.assertEqual(assessment["targeting_evidence_count"], 3)
-        self.assertEqual(assessment["severity_evidence_count"], 1)
+        self.assertEqual(assessment["severity_evidence_count"], 2)
         self.assertEqual(
             assessment["components"]["targeting"]["status"],
             "insufficient_evidence",
@@ -1142,7 +1208,7 @@ class ResearchRouteTests(unittest.TestCase):
         ):
             assessment = main.get_child_risk("child-1", "parent@test.com")
 
-        self.assertEqual(assessment["targeting_evidence_count"], 2)
+        self.assertEqual(assessment["targeting_evidence_count"], 4)
         self.assertEqual(assessment["targeting_incident_count"], 1)
         self.assertEqual(assessment["history_metrics"]["dated_incident_count"], 1)
         self.assertEqual(assessment["history_metrics"]["incidents_last_7_days"], 1)
@@ -1152,7 +1218,7 @@ class ResearchRouteTests(unittest.TestCase):
             1,
         )
         self.assertEqual(assessment["history_metrics"]["active_days"], 1)
-        self.assertEqual(assessment["targeting_cues_per_incident"], 2)
+        self.assertEqual(assessment["targeting_cues_per_incident"], 4)
         self.assertEqual(
             assessment["components"]["temporal"]["status"],
             "computed",
@@ -1320,11 +1386,11 @@ class ResearchRouteTests(unittest.TestCase):
         )
         self.assertEqual(
             recent["risk_fusion"]["message"],
-            "XGBoost requires a research-defined training target.",
+            "SHAP unavailable: no independently labeled child-risk fusion training data is configured.",
         )
         self.assertEqual(
             recent["risk_fusion"]["explanation"]["message"],
-            "Explanation unavailable",
+            "SHAP unavailable: no independently labeled child-risk fusion training data is configured.",
         )
         self.assertEqual(
             recent["research_state"]["component_order"],
@@ -1340,30 +1406,46 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertIsNone(state["G"]["value"])
         self.assertEqual(state["H"]["value"], recent["components"]["historical"]["value"])
 
-    def test_xgboost_output_is_the_only_source_of_crs(self):
-        from risk_fusion import RiskFusionService
+    def test_child_risk_passes_ordered_eight_feature_vector_and_preserves_fallback(self):
+        from risk_fusion import FEATURE_ORDER, TARGET_REQUIRED_MESSAGE
 
-        service = RiskFusionService(
-            lambda _: 0.76,
-            model_version="xgboost:test",
-            status="model_loaded",
-            target_id="approved-child-risk-target",
-            explainer=lambda _: {
-                "model_output": "raw_margin",
-                "base_value": 0.5,
-                "feature_contributions": [
-                    {"feature": "incident_score", "value": 0.1},
-                    {"feature": "temporal_risk", "value": 0.0},
-                    {"feature": "escalation", "value": 0.0},
-                    {"feature": "social_graph", "value": 0.0},
-                    {"feature": "historical", "value": 0.1},
-                ],
-                "explained_output": 0.7,
-                "reconstructed_output": 0.7,
-                "additivity_verified": True,
-            },
-            explanation_status="available",
-        )
+        class RiskFusionProbe:
+            def __init__(self):
+                self.received_features = None
+
+            def predict(self, features):
+                self.received_features = features
+                missing = [name for name in FEATURE_ORDER if features.get(name) is None]
+                return {
+                    "score": None,
+                    "status": "training_target_unavailable",
+                    "feature_order": list(FEATURE_ORDER),
+                    "missing_features": missing,
+                    "model_version": None,
+                    "message": TARGET_REQUIRED_MESSAGE,
+                }
+
+            def status(self):
+                return {
+                    "status": "training_target_unavailable",
+                    "configured": False,
+                    "model_type": "XGBoost",
+                    "explainer": "TreeSHAP",
+                    "model_version": None,
+                    "feature_order": list(FEATURE_ORDER),
+                    "target_message": TARGET_REQUIRED_MESSAGE,
+                }
+
+            def explainability_status(self):
+                return {
+                    "status": "model_unavailable",
+                    "configured": False,
+                    "model_type": "XGBoost",
+                    "method": "TreeSHAP",
+                    "message": TARGET_REQUIRED_MESSAGE,
+                }
+
+        service = RiskFusionProbe()
         records = [
             {
                 "incidentId": "fusion-previous-incident",
@@ -1406,27 +1488,18 @@ class ResearchRouteTests(unittest.TestCase):
                 datetime(2026, 10, 4, tzinfo=timezone.utc),
             )
 
-        self.assertEqual(assessment["crs"], 76.0)
-        self.assertEqual(assessment["risk_state"], "CRITICAL")
-        self.assertEqual(assessment["status"], "computed_model")
+        self.assertEqual(assessment["risk_method"], "research_derived_deterministic")
+        self.assertEqual(assessment["status"], "computed_research_deterministic")
         self.assertEqual(
             assessment["risk_fusion"]["feature_order"],
-            [
-                "incident_score",
-                "temporal_risk",
-                "escalation",
-                "social_graph",
-                "historical",
-            ],
+            list(FEATURE_ORDER),
         )
-        self.assertEqual(assessment["risk_fusion"]["model_version"], "xgboost:test")
-        self.assertEqual(
-            assessment["risk_fusion"]["explanation"]["status"],
-            "computed",
-        )
-        self.assertTrue(
-            assessment["risk_fusion"]["explanation"]["additivity_verified"]
-        )
+        self.assertEqual(list(service.received_features), list(FEATURE_ORDER))
+        self.assertIsNone(service.received_features["P"])
+        self.assertIsNone(service.received_features["D"])
+        self.assertIsNone(service.received_features["S"])
+        self.assertIsNone(service.received_features["M"])
+        self.assertEqual(assessment["risk_fusion_model"]["explainer"], "TreeSHAP")
 
     def test_social_graph_route_uses_only_stored_incidents_and_configured_weights(self):
         incidents = (
@@ -1528,15 +1601,23 @@ class ResearchRouteTests(unittest.TestCase):
         return {
             "classification_label": "Bullying",
             "classification": "CYBERBULLYING",
+            "is_risky": True,
             "cyberbullying": True,
             "model_status": "real",
             "model_version": "cyberbullying-cascade-v4",
+            "development_simulation": False,
             "risk_score": 0.9,
             "p_bullying": 0.9,
+            "stage1_label": "Bullying",
+            "stage1_status": "available",
+            "classification_confidence": 0.9,
             "gate_threshold": 0.5400000000000001,
             "category": "Insult",
+            "category_status": "predicted",
             "categories": [{"name": "Insult", "prob": 0.88}],
             "label": "high_risk",
+            "classification_notice": "",
+            "stage": "Stage 1 passed -> Stage 2 category head",
         }
 
     def test_clean_message_submitted_as_pending_is_rejected(self):

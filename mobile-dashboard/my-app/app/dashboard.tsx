@@ -415,6 +415,13 @@ const DashboardScreen: React.FC = () => {
                       : key === 'severity'
                         ? component?.value
                         : undefined;
+                    const latestStoredValue = key === 'targeting'
+                      ? researchRisk?.latest_incident?.targeting_score
+                      : key === 'severity'
+                        ? researchRisk?.latest_incident?.severity_score
+                        : undefined;
+                    const latestStoredMessageOnly = !currentMessageAnalysis
+                      && (key === 'targeting' || key === 'severity');
                     const currentSeverityEvidence = currentMessageAnalysis
                       ? Array.from(new Set([
                         ...currentMessageAnalysis.severity_evidence,
@@ -436,6 +443,14 @@ const DashboardScreen: React.FC = () => {
                               ? key === 'severity'
                                 ? `${Math.round(currentValue * 100)}% research-derived severity score`
                                 : displayResearchPercent(currentValue)
+                              : latestStoredMessageOnly
+                                ? typeof latestStoredValue === 'number'
+                                  ? `Latest stored message: ${key === 'severity'
+                                    ? `${Math.round(latestStoredValue * 100)}%${researchRisk?.latest_incident?.category ? ` — ${researchRisk.latest_incident.category}` : ''}`
+                                    : displayResearchPercent(latestStoredValue)}`
+                                  : researchRisk?.latest_incident
+                                    ? `Latest stored message: ${key === 'targeting' ? 'No targeting evidence observed' : 'Insufficient evidence'}`
+                                    : 'No current message analysis'
                               : ['targeting', 'severity', 'multimodal', 'temporal', 'escalation', 'social_graph', 'historical'].includes(key)
                                 ? typeof component?.value === 'number'
                                   ? key === 'severity' && currentMessageAnalysis
@@ -463,21 +478,20 @@ const DashboardScreen: React.FC = () => {
                               : 'Not available — no current message prediction is available.'}
                           </Text>
                         )}
-                        {key === 'targeting' && (currentMessageAnalysis || component?.evidence?.length) ? (
+                        {key === 'targeting' && (currentMessageAnalysis || component?.evidence?.length || researchRisk?.latest_incident) ? (
                           <Text style={styles.researchRiskNote}>
-                            Evidence: {typeof component?.value === 'number'
-                              ? (researchRisk?.current_message?.targeting_evidence
-                                ?? currentMessageAnalysis?.targeting_evidence
-                                ?? component?.evidence
-                                ?? []).join(', ') || 'Insufficient evidence'
-                              : 'Insufficient evidence'}
+                            {currentMessageAnalysis
+                              ? `Current message evidence: ${currentMessageAnalysis.targeting_evidence.join(', ') || 'No targeting evidence observed'}`
+                              : `Latest stored message targeting evidence: ${researchRisk?.latest_incident?.targeting_evidence.join(', ') || 'None observed'}. This is historical message evidence, not current-message targeting.`}
                           </Text>
                         ) : null}
                         {key === 'severity' && (
                           <Text style={styles.researchRiskNote}>
                             {currentMessageAnalysis
                               ? `Current message evidence: ${currentSeverityEvidence.join(', ') || 'None observed'}. This is a research-derived severity weight, not a model probability.`
-                              : 'No current message severity evidence is available. Historical severity evidence is shown only in the timeline.'}
+                              : researchRisk?.latest_incident
+                                ? `Latest stored message severity evidence: ${researchRisk.latest_incident.severity_evidence.join(', ') || 'None observed'}${researchRisk.latest_incident.category ? ` (category ${researchRisk.latest_incident.category})` : ''}. This does not populate current-message severity.`
+                                : 'No current message severity evidence is available. Historical severity evidence is shown only in the timeline.'}
                           </Text>
                         )}
                         {key === 'historical' && (
@@ -494,6 +508,8 @@ const DashboardScreen: React.FC = () => {
                           <Text style={styles.researchRiskNote}>
                             {currentTextAvailable
                               ? 'Text evidence used by the classifier; no additional image/audio/video evidence was provided.'
+                              : researchRisk?.latest_incident
+                                ? `Latest stored message — Text: ${researchRisk.latest_incident.text_status === 'available' ? 'Available' : 'Not provided'} · Image: Not provided · Audio: Not provided · Video: Not provided.`
                               : `Text: ${currentMessageAnalysis
                                 ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
                                 : component?.text_status === 'available' ? 'Available' : 'Not provided'} · Image: ${displayModalityStatus(component?.image_status)} · Audio: ${displayModalityStatus(component?.audio_status)} · Video: ${displayModalityStatus(component?.video_status)}`}
@@ -599,7 +615,10 @@ const DashboardScreen: React.FC = () => {
                     ))
                   ) : (
                     <Text style={styles.researchRiskNote}>
-                      Not available — no trained child-risk fusion model is configured.
+                      {researchRisk?.risk_fusion_model?.configured
+                        ? 'SHAP unavailable — the configured risk-fusion model has no available TreeSHAP explanation.'
+                        : researchRisk?.risk_fusion_model?.target_message
+                          ?? 'SHAP unavailable — no independently labeled child-risk fusion training data is configured.'}
                     </Text>
                   )}
                   <Text style={styles.researchRiskNote}>

@@ -8,8 +8,9 @@ import org.junit.Test
 class BackendClassifierClientTest {
 
     @Test
-    fun classifierAndIncidentRequestsShareTheBackendHost() {
-        assertEquals("${BackendApiConfig.BASE_URL}/predict", BackendApiConfig.PREDICT_URL)
+    fun classifierUrlUsesAConfiguredBackendHost() {
+        val predictUrl = BackendApiConfig.PREDICT_URL
+        assertTrue(predictUrl in BackendApiConfig.candidateBaseUrls.map { "$it/predict" })
     }
 
     @Test
@@ -74,5 +75,26 @@ class BackendClassifierClientTest {
         assertFalse(isTrustedModelResult("dummy", "dummy-dev", true))
         assertFalse(isTrustedModelResult("real", "another-model", false))
         assertFalse(isTrustedModelResult("real", "cyberbullying-cascade-v4", true))
+    }
+
+    @Test
+    fun predictionParserPreservesSignedResultForIncidentCreation() {
+        val result = BackendPredictionParser.parse(
+            """
+                {
+                  "classification_label": "Bullying",
+                  "risk_score": 0.9314275,
+                  "model_status": "real",
+                  "model_version": "cyberbullying-cascade-v4",
+                  "development_simulation": false,
+                  "prediction_token": "signed-result-token",
+                  "category": "Blackmail"
+                }
+            """.trimIndent()
+        )
+
+        assertEquals("signed-result-token", result.predictionToken)
+        assertEquals("Blackmail", result.category)
+        assertTrue(result.shouldCreateIncident)
     }
 }

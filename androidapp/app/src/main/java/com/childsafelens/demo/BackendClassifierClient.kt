@@ -20,7 +20,9 @@ data class ClassificationResult(
     val modelStatus: String,
     val modelVersion: String,
     val developmentSimulation: Boolean,
-    val offlineUnverified: Boolean
+    val offlineUnverified: Boolean,
+    val predictionToken: String? = null,
+    val category: String? = null
 ) {
     val shouldCreateIncident: Boolean
         get() = !offlineUnverified &&
@@ -57,13 +59,17 @@ internal object BackendPredictionParser {
         if (!isTrustedModelResult(modelStatus, modelVersion, developmentSimulation)) {
             throw IOException("Classifier response is not from the supplied cyberbullying model")
         }
+        val predictionToken = json.optString("prediction_token").takeIf { it.isNotBlank() }
+        val category = json.optString("category").takeIf { it.isNotBlank() }
         return ClassificationResult(
             label = label,
             riskScore = riskScore,
             modelStatus = modelStatus,
             modelVersion = modelVersion,
             developmentSimulation = developmentSimulation,
-            offlineUnverified = false
+            offlineUnverified = false,
+            predictionToken = predictionToken,
+            category = category
         )
     }
 }

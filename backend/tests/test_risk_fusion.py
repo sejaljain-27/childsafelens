@@ -18,11 +18,14 @@ from risk_fusion import (
 class RiskFusionServiceTests(unittest.TestCase):
     def setUp(self):
         self.features = {
-            "historical": 0.5,
-            "social_graph": 0.4,
-            "escalation": 0.3,
-            "temporal_risk": 0.2,
-            "incident_score": 0.1,
+            "P": 0.1,
+            "D": 0.2,
+            "S": 0.3,
+            "M": 0.4,
+            "T": 0.5,
+            "E": 0.6,
+            "G": 0.7,
+            "H": 0.8,
         }
 
     def test_requires_research_defined_target_and_returns_no_fake_score(self):
@@ -54,7 +57,7 @@ class RiskFusionServiceTests(unittest.TestCase):
 
         result = service.predict(self.features)
 
-        self.assertEqual(observed_inputs, [[0.1, 0.2, 0.3, 0.4, 0.5]])
+        self.assertEqual(observed_inputs, [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]])
         self.assertEqual(result["feature_order"], list(FEATURE_ORDER))
         self.assertEqual(result["score"], 0.78)
         self.assertEqual(result["status"], "computed")
@@ -68,13 +71,13 @@ class RiskFusionServiceTests(unittest.TestCase):
             target_id="target",
         )
         incomplete = dict(self.features)
-        incomplete["social_graph"] = None
+        incomplete["G"] = None
 
         result = service.predict(incomplete)
 
         self.assertIsNone(result["score"])
         self.assertEqual(result["status"], "insufficient_features")
-        self.assertEqual(result["missing_features"], ["social_graph"])
+        self.assertEqual(result["missing_features"], ["G"])
         for output in (-0.1, 1.1, math.nan):
             with self.subTest(output=output):
                 invalid_service = RiskFusionService(
@@ -115,10 +118,10 @@ class RiskFusionServiceTests(unittest.TestCase):
         explanation = service.explain(self.features)
 
         self.assertEqual(explanation["status"], "unavailable")
-        self.assertEqual(explanation["message"], EXPLANATION_UNAVAILABLE)
+        self.assertEqual(explanation["message"], TARGET_REQUIRED_MESSAGE)
 
     def test_tree_shap_contributions_are_returned_with_additive_model_output(self):
-        contributions = [0.1, -0.2, 0.05, 0.3, 0.15]
+        contributions = [0.1, -0.2, 0.05, 0.3, 0.15, 0.05, -0.05, 0.0]
         service = RiskFusionService(
             lambda _: 0.7,
             model_version="xgboost:test",
@@ -189,7 +192,7 @@ class RiskFusionServiceTests(unittest.TestCase):
                     raise AssertionError("Expected the loaded risk-fusion Booster.")
 
             def shap_values(self, _):
-                return [[0.1, 0.1, 0.1, 0.1, 0.1]]
+                return [[0.0625, 0.0625, 0.0625, 0.0625, 0.0625, 0.0625, 0.0625, 0.0625]]
 
         shap = SimpleNamespace(TreeExplainer=TreeExplainer)
         with tempfile.TemporaryDirectory() as temp_dir:
