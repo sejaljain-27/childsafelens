@@ -103,24 +103,20 @@ DEFAULT_DEV_AUTH_SECRET = "childsafelens-local-dev-auth-secret-32bytes"
 
 
 def _auth_secret() -> bytes:
-<<<<<<< HEAD
     secret = os.environ.get("CHILDSAFELENS_AUTH_SECRET")
-    if secret and len(secret.encode("utf-8")) >= 32:
-        return secret.encode("utf-8")
-    if secret is None or len(secret.encode("utf-8")) < 32:
+    if secret is None:
         _logger.warning(
-            "CHILDSAFELENS_AUTH_SECRET missing or too short; using local development fallback. "
+            "CHILDSAFELENS_AUTH_SECRET missing; using local development fallback. "
             "Set CHILDSAFELENS_AUTH_SECRET in production to a secure secret."
         )
         return DEFAULT_DEV_AUTH_SECRET.encode("utf-8")
-    raise HTTPException(
-        status_code=503,
-        detail="Authentication is not configured on this server.",
+    if len(secret.encode("utf-8")) >= 32:
+        return secret.encode("utf-8")
+    _logger.warning(
+        "CHILDSAFELENS_AUTH_SECRET is too short; using local development fallback. "
+        "Set CHILDSAFELENS_AUTH_SECRET in production to a secure secret."
     )
-=======
-    secret = os.environ.get("CHILDSAFELENS_AUTH_SECRET", "childsafelens-default-development-secret-32-bytes-minimum")
-    return secret.encode("utf-8")
->>>>>>> acd887d5d0ceea8f55276b7d84465c40a06ed470
+    return DEFAULT_DEV_AUTH_SECRET.encode("utf-8")
 
 
 def _base64url(data: bytes) -> str:
