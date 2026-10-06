@@ -59,6 +59,7 @@ export default function ReportsScreen() {
     ? (routeParams.email as string) || localStorage.getItem('childsafelens_parent_email') || ''
     : '';
   const childName = ((routeParams.childName as string) || '').trim() || 'selected child';
+  const currentTextAvailable = currentMessageAnalysis?.text_status === 'available';
 
   useEffect(() => {
     if (!parentEmail) {
@@ -79,8 +80,9 @@ export default function ReportsScreen() {
       return;
     }
     const params = new URLSearchParams({ parentEmail, childId });
+    const currentAnalysis = getCurrentMessageAnalysis(parentEmail, childId);
     Promise.all([
-      fetchResearchRisk(parentEmail, childId),
+      fetchResearchRisk(parentEmail, childId, currentAnalysis),
       fetchResearchCapabilities(),
     ]).then(([risk, capabilities]) => {
       setResearchRisk(risk);
@@ -141,9 +143,12 @@ export default function ReportsScreen() {
   const formatStatus = (status?: string) =>
     status ? status.replace(/_/g, ' ') : unavailableStatus;
   const temporalHistory = researchRisk?.history_metrics;
-  const temporalStatus = temporalHistory
-    ? `${temporalHistory.total_incidents ?? 0} observed incidents across ${temporalHistory.active_days ?? 0} active days`
-    : formatComponentStatus(researchRisk?.components.temporal);
+  const temporalScore = researchRisk?.components.temporal.value;
+  const temporalStatus = typeof temporalScore === 'number'
+    ? `${(temporalScore * 100).toFixed(1)}%`
+    : temporalHistory
+      ? `${temporalHistory.total_incidents ?? 0} observed incidents across ${temporalHistory.active_days ?? 0} active days`
+      : formatComponentStatus(researchRisk?.components.temporal);
   const analysisCards: AnalysisCardData[] = [
     {
       title: 'Cyberbullying classification',
@@ -200,11 +205,13 @@ export default function ReportsScreen() {
       status: childIdUnavailable
         ? 'Not available — selected child ID missing'
         : currentMessageAnalysis
-          ? currentMessageAnalysis.targeting_evidence.length
-            ? `Observed (${currentMessageAnalysis.targeting_evidence.length})`
-            : 'Insufficient evidence'
+          ? typeof currentMessageAnalysis.targeting_score === 'number'
+            ? `${(currentMessageAnalysis.targeting_score * 100).toFixed(1)}%`
+            : currentMessageAnalysis.targeting_evidence.length
+              ? `Observed (${currentMessageAnalysis.targeting_evidence.length})`
+              : 'Insufficient evidence'
         : researchRisk?.components.targeting.status === 'computed'
-        ? 'Computed'
+        ? `${((researchRisk.components.targeting.value ?? 0) * 100).toFixed(1)}%`
         : researchRisk?.components.targeting.status === 'observed_uncalibrated'
           ? `Observed (${researchRisk.components.targeting.observed_evidence_count ?? 0} evidence item(s)); not calibrated`
           : researchRisk
@@ -213,9 +220,9 @@ export default function ReportsScreen() {
       detail: childIdUnavailable
         ? 'No child-scoped query was made because the selected child ID is unavailable.'
         : currentMessageAnalysis
-        ? `Current text evidence: ${currentMessageAnalysis.targeting_evidence.join(', ') || 'Insufficient evidence'}. No probability is calculated.`
+        ? `Current-message targeting cues: ${currentMessageAnalysis.targeting_evidence.join(', ') || 'None detected'}. Research score: ${typeof currentMessageAnalysis.targeting_score === 'number' ? `${(currentMessageAnalysis.targeting_score * 100).toFixed(1)}%` : 'not calculated'}.`
         : researchRisk
-        ? `Evidence: ${researchRisk.components.targeting.evidence?.join(', ') || 'None observed'}. ${researchRisk.targeting_incident_count ?? 0} incident(s) contain targeting cues. No probability is shown without configured research weights.`
+        ? `Evidence: ${researchRisk.components.targeting.evidence?.join(', ') || 'None observed'}. ${researchRisk.targeting_incident_count ?? 0} stored incident(s) contain targeting cues. The score uses available evidence only.`
         : unavailableStatus,
     },
     {
@@ -224,33 +231,33 @@ export default function ReportsScreen() {
       status: childIdUnavailable
         ? 'Not available — selected child ID missing'
         : currentMessageAnalysis
-          ? currentMessageAnalysis.severity_evidence.length
-            ? `Observed (${currentMessageAnalysis.severity_evidence.length})`
-            : 'Insufficient evidence'
-        : researchRisk?.components.severity.status === 'computed'
-        ? 'Computed'
-        : researchRisk?.components.severity.status === 'observed_uncalibrated'
-          ? `Observed (${researchRisk.components.severity.observed_evidence_count ?? 0} evidence item(s)); not calibrated`
-          : researchRisk
-            ? 'Insufficient evidence'
-            : unavailableStatus,
+          ? typeof currentMessageAnalysis.severity_score === 'number'
+            ? `${(currentMessageAnalysis.severity_score * 100).toFixed(1)}%`
+            : currentMessageAnalysis.severity_evidence.length
+              ? `Observed (${currentMessageAnalysis.severity_evidence.length})`
+              : 'Insufficient evidence'
+        : 'No current message analysis',
       detail: childIdUnavailable
         ? 'No child-scoped query was made because the selected child ID is unavailable.'
         : currentMessageAnalysis
-        ? `Current text evidence: ${currentMessageAnalysis.severity_evidence.join(', ') || 'Insufficient evidence'}. No probability is calculated.`
-        : researchRisk
-        ? `Text evidence: ${researchRisk.components.severity.evidence?.join(', ') || 'None observed'}. A severity probability is not shown without configured research weights.`
-        : unavailableStatus,
+        ? `Current message evidence: ${currentMessageAnalysis.severity_evidence.join(', ') || 'None observed'}. No probability is calculated.`
+        : 'No current message severity evidence is available. Historical severity evidence is shown only in the timeline.',
     },
     {
       title: 'Multimodal evidence',
       icon: 'perm-media',
-      status: childIdUnavailable ? 'Not available — selected child ID missing' : formatComponentStatus(researchRisk?.components.multimodal),
+      status: childIdUnavailable
+        ? 'Not available — selected child ID missing'
+        : currentTextAvailable
+          ? 'Completed using text evidence'
+          : formatComponentStatus(researchRisk?.components.multimodal),
       detail: childIdUnavailable
         ? 'No child-scoped query was made because the selected child ID is unavailable.'
-        : `Text: ${currentMessageAnalysis
-          ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
-          : researchRisk?.multimodal_evidence?.text === 'available' ? 'Available' : 'Not provided'} · Image: Not provided · Audio: Not provided · Video: Not provided. Optional media analysis is not implemented.`,
+        : currentTextAvailable
+          ? 'Analysis completed using the current text. Image, audio, and video were skipped because they were not provided.'
+          : `Text: ${currentMessageAnalysis
+            ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
+            : researchRisk?.multimodal_evidence?.text === 'available' ? 'Available' : 'Not provided'} · Image: Not provided · Audio: Not provided · Video: Not provided. Optional media analysis is not implemented.`,
     },
     {
       title: 'Temporal repetition',
@@ -259,21 +266,26 @@ export default function ReportsScreen() {
         ? 'Not available — selected child ID missing'
         : temporalStatus,
       detail: researchCapabilities?.research_parameters.temporal_decay_configured
-        ? 'Temporal risk remains unavailable unless stored evidence and calibrated parameters support its calculation.'
-        : 'Descriptive incident history only; no calibrated temporal risk score is available.',
+        ? 'Research-derived temporal frequency and recency score from stored incident timestamps.'
+        : 'Temporal frequency and recency use configured deterministic research defaults.',
     },
     {
       title: 'Escalation',
       icon: 'trending-up',
-      status: formatComponentStatus(researchRisk?.components.escalation),
-      detail: 'Escalation score is not available until calibrated severity history and escalation parameters are configured.',
+      status: typeof researchRisk?.components.escalation.value === 'number'
+        ? `${(researchRisk.components.escalation.value * 100).toFixed(1)}%`
+        : formatComponentStatus(researchRisk?.components.escalation),
+      detail: researchRisk?.components.escalation.reason
+        ?? 'Research-derived severity trend from available historical severity evidence.',
     },
     {
       title: 'Social graph',
       icon: 'hub',
-      status: formatComponentStatus(researchRisk?.components.social_graph),
+      status: typeof researchRisk?.components.social_graph.value === 'number'
+        ? `${(researchRisk.components.social_graph.value * 100).toFixed(1)}%`
+        : formatComponentStatus(researchRisk?.components.social_graph),
       detail: researchRisk
-        ? `${researchRisk.social_graph.interaction_count} interaction(s) · ${researchRisk.social_graph.attacker_count ?? 'Not available'} identified sender(s) · graph risk score is not calibrated.`
+        ? `${researchRisk.social_graph.interaction_count} observed interaction(s) · ${researchRisk.social_graph.attacker_count ?? 0} identified sender(s). Score uses only stored sender-child relationships.`
         : unavailableStatus,
     },
     {
@@ -281,13 +293,13 @@ export default function ReportsScreen() {
       icon: 'timeline',
       status: childIdUnavailable
         ? 'Not available — selected child ID missing'
-        : researchRisk?.history_metrics
-          ? `${researchRisk.history_metrics.total_incidents ?? 0} observed incident(s) in history`
+        : typeof researchRisk?.components.historical.value === 'number'
+          ? `${(researchRisk.components.historical.value * 100).toFixed(1)}%`
           : formatComponentStatus(researchRisk?.components.historical),
       detail: childIdUnavailable
         ? 'No child-scoped query was made because the selected child ID is unavailable.'
         : researchRisk?.history_metrics
-        ? `${researchRisk.history_metrics.dated_incident_count} incident(s) have timestamps. Historical activity is observed; historical risk score is not available without a trained child-risk model.`
+        ? `${researchRisk.history_metrics.dated_incident_count} incident(s) have timestamps. Historical risk is research-derived from actual stored incidents.`
         : 'Historical activity and risk are unavailable until incident history is recorded.',
     },
     {
@@ -296,9 +308,23 @@ export default function ReportsScreen() {
       status: researchRisk?.crs == null
         ? 'CRS and risk state: Not available'
         : `CRS: ${researchRisk.crs.toFixed(1)} / 100 · ${researchRisk.risk_state}`,
-      detail: researchCapabilities?.risk_fusion.training_target_available
-        ? `Risk-fusion model: ${formatStatus(researchCapabilities.risk_fusion.status)}`
-        : 'Requires a research-defined child-level training target and trained risk-fusion model.',
+      detail: researchRisk?.risk_method === 'research_derived_deterministic'
+        ? researchRisk.risk_disclaimer ?? 'Research-derived deterministic risk fusion; not validated.'
+        : researchCapabilities?.risk_fusion.training_target_available
+          ? `Trained risk-fusion model: ${formatStatus(researchCapabilities.risk_fusion.status)}`
+          : 'Deterministic research risk fusion renormalizes weights over available evidence.',
+    },
+    {
+      title: 'Research feature contributions',
+      icon: 'pie-chart',
+      status: researchRisk?.deterministic_contributions?.length
+        ? 'Available — deterministic, not SHAP'
+        : 'Not available — no feature evidence',
+      detail: researchRisk?.deterministic_contributions?.length
+        ? researchRisk.deterministic_contributions
+          .map(item => `${item.feature}: ${item.contribution_percent.toFixed(1)}%`)
+          .join(' · ')
+        : 'No feature contributions can be calculated without available risk features.',
     },
     {
       title: 'SHAP explanation',

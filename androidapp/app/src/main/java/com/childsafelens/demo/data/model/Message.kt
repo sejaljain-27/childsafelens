@@ -13,6 +13,12 @@ data class Message(
     val classificationStatus: String? = null
 )
 
+fun Message.isVisibleTo(viewer: Sender): Boolean =
+    viewer == sender || visibleToReceiver
+
+fun Message.textFor(viewer: Sender): String =
+    if (viewer == sender) text else if (isVisibleTo(viewer)) displayText else ""
+
 enum class Sender {
     CHILD,
     SIMULATED_CONTACT

@@ -14,6 +14,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.childsafelens.demo.R
 import com.childsafelens.demo.data.model.Sender
+import com.childsafelens.demo.data.model.isVisibleTo
 import com.childsafelens.demo.ui.viewmodel.SimulatorViewModel
 
 class DualChatFragment : Fragment() {
@@ -47,8 +48,8 @@ class DualChatFragment : Fragment() {
         etContactInput = view.findViewById(R.id.etContactInput)
 
         // Setup Adapters
-        adapterChild = ChatAdapter(isChildPerspective = true)
-        adapterContact = ChatAdapter(isChildPerspective = false)
+        adapterChild = ChatAdapter(viewer = Sender.CHILD)
+        adapterContact = ChatAdapter(viewer = Sender.SIMULATED_CONTACT)
 
         rvChild.layoutManager = LinearLayoutManager(context).apply { stackFromEnd = true }
         rvContact.layoutManager = LinearLayoutManager(context).apply { stackFromEnd = true }
@@ -58,13 +59,13 @@ class DualChatFragment : Fragment() {
 
         // Observe Messages
         viewModel.messages.observe(viewLifecycleOwner) { list ->
-            adapterChild.submitList(list) {
-                if (list.isNotEmpty()) rvChild.scrollToPosition(list.size - 1)
+            val childMessages = list.filter { it.isVisibleTo(Sender.CHILD) }
+            adapterChild.submitList(childMessages) {
+                if (childMessages.isNotEmpty()) rvChild.scrollToPosition(childMessages.size - 1)
             }
-            // Receiver perspective only sees messages where visibleToReceiver is true
-            val visibleToList = list.filter { it.visibleToReceiver }
-            adapterContact.submitList(visibleToList) {
-                if (visibleToList.isNotEmpty()) rvContact.scrollToPosition(visibleToList.size - 1)
+            val contactMessages = list.filter { it.isVisibleTo(Sender.SIMULATED_CONTACT) }
+            adapterContact.submitList(contactMessages) {
+                if (contactMessages.isNotEmpty()) rvContact.scrollToPosition(contactMessages.size - 1)
             }
         }
 

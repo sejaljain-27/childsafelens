@@ -13,6 +13,8 @@ import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.childsafelens.demo.R
+import com.childsafelens.demo.data.model.Sender
+import com.childsafelens.demo.data.model.isVisibleTo
 import com.childsafelens.demo.security.SessionManager
 import com.childsafelens.demo.ui.viewmodel.ChatViewModel
 
@@ -59,7 +61,7 @@ class ChatFragment : Fragment() {
         }
 
         // Setup RecyclerView
-        adapter = ChatAdapter()
+        adapter = ChatAdapter(viewer = Sender.CHILD)
         rvChat.layoutManager = LinearLayoutManager(context).apply {
             stackFromEnd = true
         }
@@ -67,9 +69,12 @@ class ChatFragment : Fragment() {
 
         // Observe Messages
         viewModel.messages.observe(viewLifecycleOwner) { messageList ->
-            adapter.submitList(messageList) {
-                if (messageList.isNotEmpty()) {
-                    rvChat.scrollToPosition(messageList.size - 1)
+            val visibleMessages = messageList.filter {
+                it.isVisibleTo(Sender.CHILD)
+            }
+            adapter.submitList(visibleMessages) {
+                if (visibleMessages.isNotEmpty()) {
+                    rvChat.scrollToPosition(visibleMessages.size - 1)
                 }
             }
         }

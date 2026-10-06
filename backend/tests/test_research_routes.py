@@ -1,5 +1,6 @@
 import unittest
 import inspect
+import json
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -246,6 +247,66 @@ class ResearchRouteTests(unittest.TestCase):
             for incident in main._incidents.values()
         ))
 
+    def test_clean_current_text_completes_deterministic_risk_without_creating_incident(self):
+        email = "current-message-parent@example.com"
+        self.store.create_account(email, "password123", "Parent")
+        profile = self.store.add_child_profile(email, "Aarav")
+        probability = 0.04548333212733269
+        prediction = {
+            "risk_score": probability,
+            "p_bullying": probability,
+            "label": "low_risk",
+            "is_risky": False,
+            "stage1_label": "Clean",
+            "stage1_status": "available",
+            "classification_label": "Clean",
+            "classification_confidence": 1 - probability,
+            "model_status": "real",
+            "model_version": "cyberbullying-cascade-v4",
+            "development_simulation": False,
+            "classification_notice": "Supplied cascade classifier.",
+            "category": None,
+            "category_status": "skipped_clean",
+            "stage": "Early exit (Clean)",
+        }
+        with patch("main.predict_text", return_value=prediction):
+            result = main.predict(main.PredictRequest(text="Hey, how are you?"))
+
+        current_analysis = {
+            "classification": result.classification_label,
+            "probability": result.p_bullying,
+            "category": result.category,
+            "model_version": result.model_version,
+            "text_status": "available" if result.text_evidence_available else "not_provided",
+            "targeting_evidence": result.targeting_evidence["supporting_evidence"],
+            "severity_evidence": result.severity_evidence["indicators"],
+            "targeting_score": result.targeting_evidence["score"],
+            "severity_score": result.severity_evidence["score"],
+            "targeting_signals": result.targeting_evidence["indicators"],
+            "analyzed_at": result.timestamp,
+        }
+        assessment = main.get_child_risk(
+            profile["child_id"],
+            email,
+            currentAnalysis=json.dumps(current_analysis),
+        )
+
+        self.assertEqual(result.classification_label, "Clean")
+        self.assertFalse(result.incident_created)
+        self.assertEqual(assessment["incident_count"], 0)
+        self.assertEqual(assessment["current_message"]["classification"], "Clean")
+        self.assertIsNone(assessment["components"]["severity"]["value"])
+        self.assertEqual(
+            assessment["components"]["severity"]["status"],
+            "insufficient_evidence",
+        )
+        self.assertEqual(assessment["components"]["classifier_probability"]["value"], probability)
+        self.assertEqual(assessment["multimodal_evidence"]["text"], "available")
+        self.assertEqual(assessment["multimodal_evidence"]["image"], "not_provided")
+        self.assertEqual(assessment["multimodal_evidence"]["audio"], "not_provided")
+        self.assertEqual(assessment["multimodal_evidence"]["video"], "not_provided")
+        self.assertIsInstance(assessment["crs"], int)
+
     def test_unavailable_model_returns_503_without_creating_incident(self):
         with patch(
             "main.predict_text",
@@ -412,11 +473,15 @@ class ResearchRouteTests(unittest.TestCase):
             "persistent.parent@example.com",
         )
         persisted_snapshot = reopened.get_incident("persistent-incident")
-        self.assertEqual(assessment["risk_state"], "Not available")
-        self.assertIsNone(persisted_snapshot["CRS"])
+        self.assertNotEqual(assessment["risk_state"], "Not available")
+        self.assertIsInstance(persisted_snapshot["CRS"], (int, float))
         self.assertEqual(
             persisted_snapshot["riskFusionOutput"]["processingStatus"],
-            "training_target_unavailable",
+            "computed_research_deterministic",
+        )
+        self.assertEqual(
+            persisted_snapshot["riskFusionOutput"]["method"],
+            "research_derived_deterministic",
         )
         self.assertEqual(
             persisted_snapshot["shapExplanation"]["message"],
@@ -733,7 +798,7 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(stored["targeting_evidence"]["analysis_status"], "completed")
         self.assertEqual(
             stored["targeting_evidence"]["status"],
-            "observed",
+            "insufficient_evidence",
         )
         self.assertEqual(
             stored["targeting_evidence"]["indicators"]["second_person_reference"],
@@ -745,22 +810,62 @@ class ResearchRouteTests(unittest.TestCase):
             stored["severity_evidence"]["textual_evidence"],
             {"insult": ["stupid"]},
         )
-        assessment = main.get_child_risk("child-1", "parent@test.com")
+        historical_assessment = main.get_child_risk("child-1", "parent@test.com")
+        self.assertIsNone(historical_assessment["components"]["targeting"]["value"])
+        self.assertEqual(
+            historical_assessment["components"]["targeting"]["status"],
+            "insufficient_evidence",
+        )
+        self.assertIsNone(historical_assessment["components"]["severity"]["value"])
+        self.assertEqual(
+            historical_assessment["components"]["severity"]["status"],
+            "insufficient_evidence",
+        )
+        self.assertEqual(
+            historical_assessment["latest_incident"]["severity_evidence"],
+            ["insult"],
+        )
+
+        current_analysis = {
+            "classification": "Clean",
+            "probability": 0.02,
+            "category": None,
+            "model_version": "cyberbullying-cascade-v4",
+            "text_status": "available",
+            "targeting_evidence": [],
+            "severity_evidence": [],
+            "targeting_score": None,
+            "severity_score": 0.0,
+            "targeting_signals": {},
+        }
+        assessment = main.get_child_risk(
+            "child-1",
+            "parent@test.com",
+            currentAnalysis=json.dumps(current_analysis),
+        )
         self.assertEqual(
             assessment["components"]["targeting"]["status"],
-            "observed_uncalibrated",
+            "insufficient_evidence",
         )
         self.assertEqual(
             assessment["components"]["severity"]["status"],
-            "observed_uncalibrated",
+            "computed",
         )
-        self.assertEqual(assessment["components"]["severity"]["evidence"], ["insult"])
+        self.assertEqual(assessment["components"]["severity"]["evidence"], [])
+        self.assertEqual(
+            assessment["components"]["severity"]["scope"],
+            "current_message",
+        )
+        self.assertEqual(
+            assessment["latest_incident"]["severity_evidence"],
+            ["insult"],
+        )
         self.assertEqual(assessment["multimodal_evidence"]["text"], "available")
         self.assertEqual(assessment["multimodal_evidence"]["image"], "not_provided")
         self.assertEqual(assessment["multimodal_evidence"]["audio"], "not_provided")
         self.assertEqual(assessment["multimodal_evidence"]["video"], "not_provided")
-        self.assertIsNone(assessment["crs"])
-        self.assertIsNone(assessment["components"]["historical"]["value"])
+        self.assertIsInstance(assessment["crs"], int)
+        self.assertIsInstance(assessment["components"]["historical"]["value"], float)
         self.assertEqual(stored["multimodalAnalysis"]["processingStatus"], "not_required")
 
     def test_text_image_and_audio_incidents_do_not_fabricate_missing_score_components(self):
@@ -809,10 +914,10 @@ class ResearchRouteTests(unittest.TestCase):
                     "insufficient_component_evidence",
                 )
                 self.assertIn("targeting", stored["incident_score_missing_components"])
-                self.assertIn("severity", stored["incident_score_missing_components"])
+                self.assertNotIn("severity", stored["incident_score_missing_components"])
                 self.assertIn("multimodal", stored["incident_score_missing_components"])
 
-    def test_child_risk_uses_observed_incidents_but_does_not_invent_crs(self):
+    def test_child_risk_fuses_observed_incidents_deterministically(self):
         incident = main.IncidentCreate(
             incidentId="research-test-incident-2",
             parentEmail="parent@test.com",
@@ -836,20 +941,26 @@ class ResearchRouteTests(unittest.TestCase):
         assessment = main.get_child_risk("child-1", "parent@test.com")
 
         self.assertEqual(assessment["incident_count"], 1)
-        self.assertIsNone(assessment["crs"])
-        self.assertEqual(assessment["risk_state"], "Not available")
+        self.assertIsInstance(assessment["crs"], int)
+        self.assertIn(assessment["risk_state"], {"SAFE", "WARNING", "HIGH", "CRITICAL"})
         self.assertEqual(assessment["social_graph"]["attacker_count"], 1)
         self.assertEqual(assessment["targeting_evidence_count"], 3)
         self.assertEqual(assessment["severity_evidence_count"], 1)
         self.assertEqual(
             assessment["components"]["targeting"]["status"],
-            "observed_uncalibrated",
+            "insufficient_evidence",
         )
         self.assertEqual(
             assessment["components"]["severity"]["status"],
-            "observed_uncalibrated",
+            "insufficient_evidence",
         )
-        self.assertIsNone(assessment["crs"])
+        self.assertIsNone(assessment["components"]["targeting"]["value"])
+        self.assertIsNone(assessment["components"]["severity"]["value"])
+        self.assertEqual(
+            assessment["risk_method"],
+            "research_derived_deterministic",
+        )
+        self.assertTrue(assessment["deterministic_contributions"])
 
     def test_research_routes_share_canonical_incidents_for_legacy_child_names(self):
         email = "canonical-parent@example.com"
@@ -921,7 +1032,7 @@ class ResearchRouteTests(unittest.TestCase):
             entry["classifier_probability"] is None
             for entry in timeline["timeline"]
         ))
-        self.assertTrue(all(entry["crs"] is None for entry in timeline["timeline"]))
+        self.assertTrue(all(isinstance(entry["crs"], int) for entry in timeline["timeline"]))
 
     def test_child_risk_dashboard_computes_descriptive_history_from_real_incidents(self):
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -965,19 +1076,19 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(assessment["targeting_cues_per_incident"], 2)
         self.assertEqual(
             assessment["components"]["temporal"]["status"],
-            "insufficient_incident_or_targeting_scores",
+            "computed",
         )
         self.assertEqual(
             assessment["components"]["escalation"]["status"],
-            "current_severity_unavailable",
+            "computed",
         )
         self.assertEqual(
             assessment["components"]["historical"]["observed_incident_count"],
             1,
         )
-        self.assertIsNone(assessment["components"]["temporal"]["value"])
-        self.assertIsNone(assessment["components"]["historical"]["value"])
-        self.assertIsNone(assessment["crs"])
+        self.assertIsInstance(assessment["components"]["temporal"]["value"], float)
+        self.assertIsInstance(assessment["components"]["historical"]["value"], float)
+        self.assertIsInstance(assessment["crs"], int)
 
     def test_child_risk_temporal_and_escalation_use_stored_incident_history(self):
         now = datetime(2026, 10, 4, tzinfo=timezone.utc)
@@ -1015,7 +1126,7 @@ class ResearchRouteTests(unittest.TestCase):
         escalation = recent["components"]["escalation"]
         self.assertEqual(temporal["status"], "computed")
         self.assertEqual(escalation["status"], "computed")
-        self.assertAlmostEqual(escalation["value"], 0.6)
+        self.assertAlmostEqual(escalation["value"], 0.3)
         self.assertGreater(
             temporal["value"],
             after_activity_stops["components"]["temporal"]["value"],
@@ -1112,21 +1223,18 @@ class ResearchRouteTests(unittest.TestCase):
                 second_time + timedelta(days=2),
             )
 
-        self.assertEqual(
-            first["components"]["historical"]["status"],
-            "child_risk_model_not_configured",
-        )
+        self.assertEqual(first["components"]["historical"]["status"], "computed")
         self.assertEqual(first["components"]["historical"]["observed_incident_count"], 1)
-        self.assertIsNone(first["components"]["historical"]["value"])
+        self.assertIsInstance(first["components"]["historical"]["value"], float)
         self.assertEqual(
             recent["components"]["historical"]["status"],
-            "child_risk_model_not_configured",
+            "computed",
         )
         self.assertEqual(recent["components"]["historical"]["observed_incident_count"], 2)
-        self.assertIsNone(recent["components"]["historical"]["value"])
-        self.assertIsNone(recent["crs"])
-        self.assertIsNone(stopped["crs"])
-        self.assertEqual(recent["risk_state"], "Not available")
+        self.assertIsInstance(recent["components"]["historical"]["value"], float)
+        self.assertIsInstance(recent["crs"], int)
+        self.assertIsInstance(stopped["crs"], int)
+        self.assertIn(recent["risk_state"], {"SAFE", "WARNING", "HIGH", "CRITICAL"})
         self.assertEqual(
             recent["risk_fusion"]["status"],
             "training_target_unavailable",
@@ -1141,14 +1249,14 @@ class ResearchRouteTests(unittest.TestCase):
         )
         self.assertEqual(
             recent["research_state"]["component_order"],
-            ["P", "D", "S", "M", "R", "E", "G", "H"],
+            ["P", "D", "S", "M", "T", "E", "G", "H"],
         )
         state = recent["research_state"]["components"]
         self.assertIsNone(state["P"]["value"])
         self.assertEqual(state["D"]["value"], 0.9)
         self.assertEqual(state["S"]["value"], 0.8)
         self.assertIsNone(state["M"]["value"])
-        self.assertEqual(state["R"]["value"], recent["components"]["temporal"]["value"])
+        self.assertEqual(state["T"]["value"], recent["components"]["temporal"]["value"])
         self.assertEqual(state["E"]["value"], recent["components"]["escalation"]["value"])
         self.assertIsNone(state["G"]["value"])
         self.assertEqual(state["H"]["value"], recent["components"]["historical"]["value"])
@@ -1221,7 +1329,7 @@ class ResearchRouteTests(unittest.TestCase):
 
         self.assertEqual(assessment["crs"], 76.0)
         self.assertEqual(assessment["risk_state"], "CRITICAL")
-        self.assertEqual(assessment["status"], "computed")
+        self.assertEqual(assessment["status"], "computed_model")
         self.assertEqual(
             assessment["risk_fusion"]["feature_order"],
             [
@@ -1283,7 +1391,10 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(graph["interaction_count"], 3)
         self.assertEqual(graph["features"]["concentration"]["value"], 2 / 3)
         self.assertEqual(graph["graph_score_status"], "computed_development_metric")
-        self.assertAlmostEqual(graph["graph_score"], (2 + 2 / 3 + 3) / 3)
+        self.assertAlmostEqual(
+            graph["graph_score"],
+            ((2 / 7) + (2 / 3) + (3 / 7)) / 3,
+        )
 
     def test_social_graph_route_returns_no_history_for_child_without_incidents(self):
         graph = main.get_child_social_graph(
@@ -1296,7 +1407,7 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(graph["edges"], [])
         self.assertIsNone(graph["graph_score"])
 
-    def test_parent_action_does_not_change_model_risk(self):
+    def test_parent_action_does_not_change_deterministic_research_risk(self):
         incident = main.IncidentCreate(
             incidentId="research-parent-action-test",
             parentEmail="parent@test.com",
@@ -1312,6 +1423,7 @@ class ResearchRouteTests(unittest.TestCase):
         )
         with patch("main.predict_text", return_value=self._bullying_prediction()):
             main.create_incident(incident)
+        before_decision = main.get_child_risk("child-1", "parent@test.com")
         main.parent_allow(incident.incidentId)
 
         assessment = main.get_child_risk("child-1", "parent@test.com")
@@ -1319,7 +1431,8 @@ class ResearchRouteTests(unittest.TestCase):
             incident.incidentId, "parent@test.com"
         )
 
-        self.assertIsNone(assessment["crs"])
+        self.assertEqual(assessment["crs"], before_decision["crs"])
+        self.assertEqual(assessment["risk_state"], before_decision["risk_state"])
         self.assertEqual(main._incidents[incident.incidentId]["parentDecision"], "ALLOW")
         self.assertEqual(explanation["parent_action"], "ALLOW")
         self.assertIsNone(explanation["shap_values"])
