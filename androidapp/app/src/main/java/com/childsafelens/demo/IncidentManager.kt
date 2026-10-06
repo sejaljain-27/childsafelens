@@ -21,7 +21,8 @@ import java.util.UUID
  */
 object IncidentManager {
     private const val TAG = "IncidentManager"
-    private const val BASE_URL = BackendApiConfig.BASE_URL
+    private val BASE_URL: String
+        get() = BackendApiConfig.BASE_URL
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private var db: AppDatabase? = null

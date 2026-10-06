@@ -16,55 +16,35 @@ import { HeroSection } from '../components/ui/hero-section-with-smooth-bg-shader
 import { useRouter } from 'expo-router';
 import {
   loginParent,
-  registerParent,
   storeParentSession,
 } from '../services/alertsService';
 
 const LoginScreen: React.FC = () => {
   const router = useRouter();
-  const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [fullName, setFullName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
   const handleAuth = async () => {
-    if (isSignup) {
-      if (!fullName || !email || !password) {
-        Alert.alert('Validation Error', 'Please fill in all fields');
-        return;
-      }
-      if (password.length < 6) {
-        Alert.alert('Validation Error', 'Password must be at least 6 characters');
-        return;
-      }
-    } else {
-      if (!email || !password) {
-        Alert.alert('Validation Error', 'Please fill in all fields');
-        return;
-      }
+    if (!email || !password) {
+      Alert.alert('Validation Error', 'Please enter your email and password');
+      return;
     }
 
     setIsLoading(true);
     try {
-      const account = isSignup
-        ? await registerParent({ email: email.trim().toLowerCase(), password, fullName: fullName.trim() })
-        : await loginParent({ email: email.trim().toLowerCase(), password });
+      const account = await loginParent({ email: email.trim().toLowerCase(), password });
       storeParentSession(account);
       router.replace({
         pathname: '/dashboard',
         params: { email: account.email }
       });
     } catch (error) {
-      console.error('Parent account request failed:', error);
+      console.error('Parent login failed:', error);
       Alert.alert('Sign in failed', error instanceof Error ? error.message : 'Unable to verify this account.');
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const toggleMode = () => {
-    setIsSignup(!isSignup);
   };
 
   return (
@@ -87,29 +67,14 @@ const LoginScreen: React.FC = () => {
             <Text style={styles.brandName}>
               CHILD SAFELENS
             </Text>
-            <Text style={styles.brandTagline}>Secure Parental Control</Text>
+            <Text style={styles.brandTagline}>Secure Parental Control Dashboard</Text>
           </View>
 
           {/* Form Box */}
           <View style={styles.formBox}>
-            {/* Tabs */}
-            <View style={styles.tabsContainer}>
-              <TouchableOpacity
-                style={[styles.tab, !isSignup && styles.activeTab]}
-                onPress={() => isSignup && toggleMode()}
-              >
-                <Text style={[styles.tabText, !isSignup && styles.activeTabText]}>
-                  LOGIN
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.tab, isSignup && styles.activeTab]}
-                onPress={() => !isSignup && toggleMode()}
-              >
-                <Text style={[styles.tabText, isSignup && styles.activeTabText]}>
-                  SIGN UP
-                </Text>
-              </TouchableOpacity>
+            {/* Header Title */}
+            <View style={styles.headerContainer}>
+              <Text style={styles.headerTitle}>PARENT SIGN IN</Text>
             </View>
 
             {/* Form Divider */}
@@ -117,23 +82,6 @@ const LoginScreen: React.FC = () => {
 
             {/* Form Content */}
             <View style={styles.formContent}>
-              {isSignup && (
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>Full Name</Text>
-                  <View style={styles.inputWrapper}>
-                    <Text style={styles.inputIcon}>👤</Text>
-                    <TextInput
-                      style={styles.input}
-                      placeholder="John Doe"
-                      placeholderTextColor="#9CA3AF"
-                      value={fullName}
-                      onChangeText={setFullName}
-                      editable={!isLoading}
-                    />
-                  </View>
-                </View>
-              )}
-
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>Email Address</Text>
                 <View style={styles.inputWrapper}>
@@ -167,11 +115,9 @@ const LoginScreen: React.FC = () => {
                 </View>
               </View>
 
-              {!isSignup && (
-                <TouchableOpacity style={styles.forgotContainer}>
-                  <Text style={styles.forgotPassword}>Forgot password?</Text>
-                </TouchableOpacity>
-              )}
+              <TouchableOpacity style={styles.forgotContainer}>
+                <Text style={styles.forgotPassword}>Forgot password?</Text>
+              </TouchableOpacity>
             </View>
 
             {/* Action Button */}
@@ -182,25 +128,9 @@ const LoginScreen: React.FC = () => {
               disabled={isLoading}
             >
               <Text style={styles.authButtonText}>
-                {isLoading
-                  ? 'Processing...'
-                  : isSignup
-                  ? 'Create Account'
-                  : 'Sign In'}
+                {isLoading ? 'Processing...' : 'Sign In'}
               </Text>
             </TouchableOpacity>
-
-            {/* Toggle Form Mode */}
-            <View style={styles.toggleContainer}>
-              <Text style={styles.toggleText}>
-                {isSignup ? 'Already have an account? ' : "Don't have an account? "}
-              </Text>
-              <TouchableOpacity onPress={toggleMode}>
-                <Text style={styles.toggleLink}>
-                  {isSignup ? 'Sign In' : 'Sign Up'}
-                </Text>
-              </TouchableOpacity>
-            </View>
           </View>
 
         </ScrollView>
@@ -279,22 +209,17 @@ const styles = StyleSheet.create({
     paddingBottom: isSmallScreen ? 16 : isMediumScreen ? 20 : 24,
     elevation: 10,
   },
-  tabsContainer: { flexDirection: 'row', width: '100%' },
-  tab: { 
-    flex: 1, 
-    paddingVertical: isSmallScreen ? 12 : isMediumScreen ? 14 : 16, 
-    alignItems: 'center', 
-    borderBottomWidth: 3, 
-    borderBottomColor: 'transparent' 
+  headerContainer: {
+    paddingVertical: isSmallScreen ? 14 : isMediumScreen ? 16 : 18,
+    alignItems: 'center',
+    width: '100%',
   },
-  activeTab: { borderBottomColor: '#60A5FA' },
-  tabText: { 
-    fontSize: tabFontSize, 
-    fontWeight: '700', 
-    color: 'rgba(255, 255, 255, 0.4)', 
-    letterSpacing: 1 
+  headerTitle: {
+    fontSize: tabFontSize,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 1,
   },
-  activeTabText: { color: '#ffffff' },
   divider: { height: 2, backgroundColor: 'rgba(255, 255, 255, 0.1)' },
   formContent: { 
     paddingHorizontal: padding, 
@@ -359,37 +284,6 @@ const styles = StyleSheet.create({
     color: '#0F172A', 
     fontSize: buttonFontSize, 
     fontWeight: '800', 
-    letterSpacing: 0.5 
-  },
-  toggleContainer: { 
-    flexDirection: 'row', 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    paddingHorizontal: padding,
-    flexWrap: 'wrap'
-  },
-  toggleText: { 
-    fontSize: isSmallScreen ? 13 : isMediumScreen ? 14 : 15, 
-    color: 'rgba(255, 255, 255, 0.6)' 
-  },
-  toggleLink: { 
-    fontSize: isSmallScreen ? 13 : isMediumScreen ? 14 : 15, 
-    color: '#60A5FA', 
-    fontWeight: '700' 
-  },
-  demoButton: { 
-    marginTop: isSmallScreen ? 20 : isMediumScreen ? 28 : 32, 
-    paddingVertical: isSmallScreen ? 12 : 14, 
-    paddingHorizontal: isSmallScreen ? 20 : isMediumScreen ? 28 : 32, 
-    backgroundColor: 'rgba(255, 255, 255, 0.15)', 
-    borderRadius: isSmallScreen ? 12 : 16, 
-    borderWidth: 2, 
-    borderColor: 'rgba(255, 255, 255, 0.3)' 
-  },
-  demoButtonText: { 
-    color: '#ffffff', 
-    fontSize: isSmallScreen ? 13 : isMediumScreen ? 15 : 16, 
-    fontWeight: '700', 
     letterSpacing: 0.5 
   },
 });

@@ -70,7 +70,8 @@ internal object BackendPredictionParser {
 
 object BackendClassifierClient {
     private const val TAG = "BackendClassifier"
-    private const val PREDICT_URL = BackendApiConfig.PREDICT_URL
+    private val PREDICT_URL: String
+        get() = BackendApiConfig.PREDICT_URL
     private const val TIMEOUT_MILLIS = 3_000
 
     private data class PendingCheck(

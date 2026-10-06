@@ -227,14 +227,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun classifyMessage(text: String, sender: Sender, type: String) {
         if (text.isBlank()) return
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
+        val isIncoming = (type == "INCOMING")
         val message = Message(
             id = UUID.randomUUID().toString(),
             text = text,
             sender = sender,
             timestamp = System.currentTimeMillis(),
-            displayText = "",
-            isRevealed = false,
-            visibleToReceiver = false,
+            displayText = if (isIncoming) "" else text,
+            isRevealed = !isIncoming,
+            visibleToReceiver = !isIncoming,
             classificationStatus = "Checking backend"
         )
         addMessage(message)
@@ -261,8 +262,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 message.id,
                 RiskLevel.PENDING,
                 "Offline / unverified (queued for recheck)",
-                "",
-                false
+                text,
+                true
             )
             return
         }
@@ -284,12 +285,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val filteredText = applySafeSendFilter(text)
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH
             else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
+
+        val isIncoming = (type == "INCOMING")
+        val hideInitially = isIncoming && policy.requiresParentApproval
         setClassificationState(
             message.id,
             riskLevel,
             if (result.developmentSimulation) "Development / simulation" else "Backend verified",
-            if (policy.requiresParentApproval) "" else filteredText,
-            !policy.requiresParentApproval
+            if (hideInitially) "" else text,
+            !hideInitially
         )
 
         IncidentManager.createAndSendIncident(
@@ -307,14 +311,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         "ALLOW", "SHOW" -> updateMessageState(message.id, filteredText, true, false)
                         "BLOCK", "HIDE" -> updateMessageState(
                             message.id,
-                            if (type == "INCOMING") "Message hidden by parent" else "Message was not sent",
-                            type == "INCOMING",
-                            type == "INCOMING"
+                            if (type == "INCOMING") "⚠️ You can't view this message" else "Message was not sent",
+                            true,
+                            true
                         )
                         "EDIT" -> updateMessageState(
                             message.id,
                             "Message requires rephrasing",
-                            false,
+                            !isIncoming,
                             false
                         )
                     }
@@ -403,14 +407,15 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
     private fun classifyMessage(text: String, sender: Sender, type: String) {
         if (text.isBlank()) return
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
+        val isIncoming = (type == "INCOMING")
         val message = Message(
             id = UUID.randomUUID().toString(),
             text = text,
             sender = sender,
             timestamp = System.currentTimeMillis(),
-            displayText = "",
-            isRevealed = false,
-            visibleToReceiver = false,
+            displayText = if (isIncoming) "" else text,
+            isRevealed = !isIncoming,
+            visibleToReceiver = !isIncoming,
             classificationStatus = "Checking backend"
         )
         addMessage(message)
@@ -436,8 +441,8 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
                 message.id,
                 RiskLevel.PENDING,
                 "Offline / unverified (queued for recheck)",
-                "",
-                false
+                text,
+                true
             )
             return
         }
@@ -459,12 +464,15 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
         val filteredText = applySafeSendFilter(text)
         val riskLevel = if (score > 0.8f) RiskLevel.HIGH
             else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
+
+        val isIncoming = (type == "INCOMING")
+        val hideInitially = isIncoming && policy.requiresParentApproval
         setClassificationState(
             message.id,
             riskLevel,
             if (result.developmentSimulation) "Development / simulation" else "Backend verified",
-            if (policy.requiresParentApproval) "" else filteredText,
-            !policy.requiresParentApproval
+            if (hideInitially) "" else text,
+            !hideInitially
         )
 
         IncidentManager.createAndSendIncident(
@@ -482,14 +490,14 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
                         "ALLOW", "SHOW" -> updateMessageState(message.id, filteredText, true, false)
                         "BLOCK", "HIDE" -> updateMessageState(
                             message.id,
-                            if (type == "INCOMING") "Message hidden by parent" else "Message was not sent",
-                            type == "INCOMING",
-                            type == "INCOMING"
+                            if (type == "INCOMING") "⚠️ You can't view this message" else "Message was not sent",
+                            true,
+                            true
                         )
                         "EDIT" -> updateMessageState(
                             message.id,
                             "Message requires rephrasing",
-                            false,
+                            !isIncoming,
                             false
                         )
                     }

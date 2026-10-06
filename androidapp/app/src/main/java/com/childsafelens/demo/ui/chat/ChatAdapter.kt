@@ -54,7 +54,7 @@ class ChatAdapter(
         } else if (holder is LeftViewHolder) {
             holder.tvTime.text = timeStr
             if (message.isBlockedByParent) {
-                holder.tvMessage.text = "Message hidden by parent"
+                holder.tvMessage.text = "⚠️ You can't view this message"
             } else {
                 holder.tvMessage.text = message.displayText
             }

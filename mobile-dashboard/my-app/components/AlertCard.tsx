@@ -33,30 +33,14 @@ const AlertCard: React.FC<AlertCardProps> = ({ alert, onDecision }) => {
       </Text>
       <Text style={styles.status}>Status: {alert.status} {alert.parentDecision ? `(Parent: ${alert.parentDecision})` : ''}</Text>
 
-      {isPending && (
+      {isPending && isIncoming && (
         <View style={styles.actions}>
-          {isIncoming ? (
-            <>
-              <TouchableOpacity style={[styles.btn, styles.allowBtn]} onPress={() => onDecision(alert.incidentId, 'ALLOW')}>
-                <Text style={styles.btnText}>View</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.blockBtn]} onPress={() => onDecision(alert.incidentId, 'BLOCK')}>
-                <Text style={styles.btnText}>Block</Text>
-              </TouchableOpacity>
-            </>
-          ) : (
-            <>
-              <TouchableOpacity style={[styles.btn, styles.allowBtn]} onPress={() => onDecision(alert.incidentId, 'ALLOW')}>
-                <Text style={styles.btnText}>Allow Send</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.editBtn]} onPress={() => onDecision(alert.incidentId, 'EDIT')}>
-                <Text style={styles.btnText}>Ask Child to Edit</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.blockBtn]} onPress={() => onDecision(alert.incidentId, 'BLOCK')}>
-                <Text style={styles.btnText}>Block Send</Text>
-              </TouchableOpacity>
-            </>
-          )}
+          <TouchableOpacity style={[styles.btn, styles.allowBtn]} onPress={() => onDecision(alert.incidentId, 'ALLOW')}>
+            <Text style={styles.btnText}>View</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.btn, styles.blockBtn]} onPress={() => onDecision(alert.incidentId, 'BLOCK')}>
+            <Text style={styles.btnText}>Block</Text>
+          </TouchableOpacity>
         </View>
       )}
     </View>

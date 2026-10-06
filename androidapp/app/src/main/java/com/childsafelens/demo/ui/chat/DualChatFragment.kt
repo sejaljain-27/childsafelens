@@ -61,8 +61,8 @@ class DualChatFragment : Fragment() {
             adapterChild.submitList(list) {
                 if (list.isNotEmpty()) rvChild.scrollToPosition(list.size - 1)
             }
-            // Stealth blocking: receiver perspective only sees messages where visibleToReceiver is true
-            val visibleToList = list.filter { it.visibleToReceiver || it.sender == Sender.SIMULATED_CONTACT }
+            // Receiver perspective only sees messages where visibleToReceiver is true
+            val visibleToList = list.filter { it.visibleToReceiver }
             adapterContact.submitList(visibleToList) {
                 if (visibleToList.isNotEmpty()) rvContact.scrollToPosition(visibleToList.size - 1)
             }
