@@ -196,14 +196,12 @@ never returns fabricated output.
 
 The dashboard reports counts from actual stored incidents. Targeting cues,
 severity categories, and sender relationships are included only when the
-incident request supplies the corresponding context. They are evidence, not
-calibrated probabilities or risk scores. Historical risk H remains a
-contextual component; CRS and the categorical Child Risk State are produced
-only from an actual configured XGBoost risk-fusion model. The available
-datasets contain message-level labels, not child-level time-window risk
-targets, so this repository currently has no valid risk-fusion training target.
-It never trains a risk model from those message labels or dummy classifier
-results. Inspection found 18,131 rows in
+message or stored incident supplies the corresponding evidence. Deterministic
+child-risk outputs are research parameters, not a trained, clinically
+validated, or scientifically validated model. The available datasets contain
+message-level labels, not child-level time-window risk targets, so this
+repository does not train a risk model from those message labels or dummy
+classifier results. Inspection found 18,131 rows in
 `ChildSafeLens_Final_Dataset (1).csv`, 10,000 in
 `hinglish_cyberbullying_dataset_10k_userwords (1).csv`, and 44,148 in
 `ipd_merged_dataset.csv`; their labels are message-level bullying/non-bullying,
@@ -219,9 +217,10 @@ Loading requires a declared target ID and an explicitly validated target
 `CHILDSAFELENS_RISK_MODEL` artifact in XGBoost JSON or UBJ format. The artifact
 must include the exact feature names/order, matching
 `childsafelens_target_id` metadata, and `childsafelens_output_scale=0_1`. The
-optional `xgboost` runtime dependency is not installed by this change. Only the
-loaded model's numeric output in [0, 1] may become CRS (scaled to 0–100); there
-is no fallback or score derived from historical risk alone.
+optional `xgboost` runtime dependency is not installed by this change. A
+configured model's output remains the model-based CRS; otherwise the
+deterministic research fusion below supplies CRS when at least one valid
+feature is available.
 
 When both the model and SHAP are available, the same XGBoost Booster/input is
 explained with `shap.TreeExplainer`. Returned feature contributions are actual
@@ -232,7 +231,8 @@ reconstruct XGBoost's actual raw-margin output within tolerance. This is
 explicitly not the probability-space CRS. Missing models/dependencies,
 incompatible SHAP results, or calculation failures return
 `"Explanation unavailable"` with no contributions. SHAP is optional and is
-not installed by this change; the existing dashboard is unchanged.
+not installed by this change. Deterministic fusion contributions below are
+not SHAP and are displayed separately.
 
 Each incident stores a Current Incident Score only when classifier probability,
 targeting score, severity score, multimodal score, and all four configured
@@ -257,26 +257,72 @@ weights are configured. Missing image/audio/video evidence does not invalidate
 text-based targeting or severity analysis. The combined incident score still
 remains unavailable when any of its required component scores are absent.
 
-Temporal risk is computed from stored incidents only when each record contains
-an actual Current Incident Score and targeting score, with a positive
-`CHILDSAFELENS_TEMPORAL_DECAY_PER_SECOND` (λ). It decays by incident age and
-therefore falls as activity stops. Escalation compares the latest stored
-severity score against the EMA of earlier stored severity scores using
-`CHILDSAFELENS_ESCALATION_ALPHA` (α, greater than 0 and at most 1); it remains
-unavailable without an actual current severity and prior severity history.
-These are separate measures: temporal risk describes repetition/recency, and
-escalation describes an increase in severity.
+Temporal risk is computed from stored incident count and actual timestamps.
+Frequency is normalized against
+`CHILDSAFELENS_TEMPORAL_REFERENCE_COUNT` (default 7); recency decays
+exponentially from the newest stored timestamp using
+`CHILDSAFELENS_TEMPORAL_DECAY_PER_SECOND` (default `ln(2)/(7 days)`). The
+frequency/recency weights default to 0.6/0.4 and are configured with
+`CHILDSAFELENS_TEMPORAL_FREQUENCY_WEIGHT` and
+`CHILDSAFELENS_TEMPORAL_RECENCY_WEIGHT`. If no valid timestamp exists, the
+recency feature is omitted and the frequency weight is renormalized.
+Escalation is historical: it sorts stored incidents by timestamp, derives
+severity only from their actual severity evidence, then measures the positive
+increase between consecutive EMA states using
+`CHILDSAFELENS_ESCALATION_ALPHA` (default 0.5). With no dated severity
+observations, escalation is unavailable (or neutral when severity exists but
+timestamps do not).
 
-Historical risk is computed only when actual temporal scores and
-`CHILDSAFELENS_HISTORICAL_RETENTION` (eta) are available, where 0 <= eta < 1.
-It applies the EMA to prior states derived chronologically from stored incident
-scores and temporal values; the initial state is the first actual temporal
-value. At read time the latest state is recomputed against current decayed
-temporal risk, so it can decrease when activity stops. `risk_state` maps the
-XGBoost CRS through configured warning, high, and critical thresholds.
-`research_state` returns `[P, D, S, M, R, E, G, H]` with each actual value and
-status separately; unavailable components are `null`. This is a research
-state, not a validated clinical or predictive assessment.
+Historical risk uses stored incidents only. Its available features are
+frequency (normalized against the temporal reference count), recency (using
+the same timestamp decay), mean observed severity, and mean stored classifier
+probability. Each has a default weight of 0.25; missing features are excluded
+and the remaining weights renormalized. This historical value is separate from
+current-message targeting and severity. The social graph is likewise based
+only on stored sender-child relationships. `research_state` returns the
+components `[P, D, S, M, T, E, G, H]` and their evidence statuses separately;
+unavailable values are `null`.
+
+### Deterministic research CRS
+
+When no configured trained risk-fusion model returns a CRS, the service
+combines available components using deterministic defaults. The components
+are: P, current classifier probability; D, current targeting score; S, current
+severity score; M, current text classifier probability (or current text
+severity score when a classifier probability is absent); T, temporal
+repetition/recency; E, historical escalation; G, social graph; and H,
+historical risk. A current analysis, when supplied, is used for current P/D/S;
+it does not replace stored incidents as the source of T/E/G/H. Media that was
+not submitted is not treated as a failure and does not invalidate text.
+
+| Feature | P | D | S | M | T | E | G | H |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Default configured weight | 0.20 | 0.15 | 0.20 | 0.10 | 0.10 | 0.10 | 0.05 | 0.10 |
+
+For available features, the CRS is
+`round(100 * sum(weight * value) / sum(available weights))`. Missing feature
+values are excluded, not substituted with zero, and the remaining weights are
+renormalized. If no feature has a positive available weight, CRS and
+`risk_state` are `"Not available"`. The contribution breakdown contains
+deterministic weighted contributions and normalized feature shares; it is not
+SHAP. `risk_method` identifies whether CRS came from a trained risk-fusion
+model or `research_derived_deterministic`, and the output is explicitly
+`validated: false` / research-derived, not clinically or scientifically
+validated. Risk-state defaults are SAFE below 25, WARNING from 25, HIGH from
+50, and CRITICAL from 75; override them with
+`CHILDSAFELENS_WARNING_THRESHOLD`, `CHILDSAFELENS_HIGH_THRESHOLD`, and
+`CHILDSAFELENS_CRITICAL_THRESHOLD`.
+
+Fusion defaults can be overridden individually with
+`CHILDSAFELENS_FUSION_P_WEIGHT`, `CHILDSAFELENS_FUSION_D_WEIGHT`,
+`CHILDSAFELENS_FUSION_S_WEIGHT`, `CHILDSAFELENS_FUSION_M_WEIGHT`,
+`CHILDSAFELENS_FUSION_T_WEIGHT`, `CHILDSAFELENS_FUSION_E_WEIGHT`,
+`CHILDSAFELENS_FUSION_G_WEIGHT`, and `CHILDSAFELENS_FUSION_H_WEIGHT`.
+Severity and graph feature weights also have research defaults and can be
+overridden individually using the
+`CHILDSAFELENS_SEVERITY_<FEATURE>_WEIGHT` and
+`CHILDSAFELENS_GRAPH_<FEATURE>_WEIGHT` names. Parameters are development
+settings and are not empirically validated.
 
 The social graph uses NetworkX `MultiDiGraph` edges built only from stored
 incidents with both a real `senderId` and `childId`. Each edge represents one
@@ -298,17 +344,17 @@ from the message or package name.
 Thresholds can be adjusted centrally with
 `CHILDSAFELENS_WARNING_THRESHOLD`, `CHILDSAFELENS_HIGH_THRESHOLD`, and
 `CHILDSAFELENS_CRITICAL_THRESHOLD` (initial defaults: 25, 50, and 75).
-Feature-weight configuration uses `CHILDSAFELENS_<GROUP>_<FEATURE>_WEIGHT`;
-all weights for a group must be supplied and sum to a positive value. These
-parameters are research settings, not empirically validated values. Missing
-weights, trained research models, provider implementations, or scored history
-remain explicitly unavailable rather than being filled with defaults.
+Feature-weight configuration uses `CHILDSAFELENS_<GROUP>_<FEATURE>_WEIGHT`.
+For deterministic research components, omitted overrides use the defaults
+documented above. For the separately configured Current Incident Score,
+explicit configuration of all four weights is still required. Missing
+evidence remains unavailable and is not filled with fabricated values.
 
 When the supplied PKL is loaded, classifier output reports the real model
 version and is not marked as a development simulation; it remains
 `validated: false`. Only the missing-artifact development fallback is marked
 as dummy/simulation. The parent dashboard shows dummy classifier status
-separately from the unavailable Child Risk State (CRS).
+separately from the risk score and its research disclaimer.
 
 Before fitting XGBoost, collect time-ordered, child-level research
 annotations using a documented rubric for Safe, Warning, High, and Critical.

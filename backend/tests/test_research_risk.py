@@ -9,6 +9,7 @@ from research_risk import (
     analytics_summary,
     configured_weights,
     current_incident_score,
+    deterministic_risk_fusion,
     escalation_score,
     historical_risk,
     _historical_component,
@@ -22,7 +23,7 @@ from research_risk import (
 
 
 class ResearchRiskTests(unittest.TestCase):
-    def test_targeting_reports_observed_cues_without_inventing_probability(self):
+    def test_targeting_calculates_a_score_from_available_context(self):
         result = targeting_evidence(
             "@Aarav, please stop",
             child_name="Aarav",
@@ -30,21 +31,21 @@ class ResearchRiskTests(unittest.TestCase):
             reply_to_child=True,
         )
 
-        self.assertEqual(result["status"], "observed")
-        self.assertIsNone(result["score"])
+        self.assertEqual(result["status"], "computed")
+        self.assertAlmostEqual(result["score"], 0.75)
         self.assertEqual(
             result["supporting_evidence"],
             ["direct_mention", "child_name_reference", "reply_to_child"],
         )
 
-    def test_text_only_targeting_runs_but_does_not_overstate_child_targeting(self):
+    def test_text_only_targeting_scores_only_the_available_text_signal(self):
         result = targeting_evidence("You are so stupid")
 
-        self.assertEqual(result["status"], "observed")
+        self.assertEqual(result["status"], "computed")
         self.assertEqual(result["analysis_status"], "completed")
         self.assertIn("second_person_reference", result["available_signals"])
         self.assertEqual(result["supporting_evidence"], ["second_person_reference"])
-        self.assertIsNone(result["score"])
+        self.assertEqual(result["score"], 1.0)
 
     def test_targeting_score_normalizes_only_available_configured_signals(self):
         result = targeting_evidence(
@@ -72,11 +73,12 @@ class ResearchRiskTests(unittest.TestCase):
         )
         self.assertAlmostEqual(result["score"], 6 / 8)
 
-    def test_severity_evidence_does_not_assign_uncalibrated_scores(self):
+    def test_severity_evidence_uses_default_research_severity_weights(self):
         result = severity_evidence(["threat", "threat", "unrecognized"])
 
         self.assertEqual(result["indicators"], ["threat"])
-        self.assertIsNone(result["score"])
+        self.assertEqual(result["score"], 0.7)
+        self.assertEqual(result["score_status"], "research_weighted_severity")
 
     def test_text_only_severity_uses_actual_textual_cues_without_other_modalities(self):
         insult = severity_evidence([], text="You are so stupid")
@@ -86,7 +88,7 @@ class ResearchRiskTests(unittest.TestCase):
         self.assertEqual(insult["status"], "available")
         self.assertEqual(insult["indicators"], ["insult"])
         self.assertEqual(insult["textual_evidence"], {"insult": ["stupid"]})
-        self.assertIsNone(insult["score"])
+        self.assertEqual(insult["score"], 0.2)
         self.assertEqual(threat["indicators"], ["physical_harm", "threat"])
         self.assertEqual(
             threat["textual_evidence"],
@@ -99,7 +101,7 @@ class ResearchRiskTests(unittest.TestCase):
         self.assertEqual(result["analysis_status"], "completed")
         self.assertEqual(result["status"], "insufficient_evidence")
         self.assertEqual(result["indicators"], [])
-        self.assertIsNone(result["score"])
+        self.assertEqual(result["score"], 0.0)
 
     def test_severity_score_requires_explicit_evidence_and_configured_weights(self):
         env = {
@@ -110,8 +112,8 @@ class ResearchRiskTests(unittest.TestCase):
             weights = configured_weights("severity", SEVERITY_CATEGORIES)
             result = severity_evidence(["threat"], weights, evidence_provided=True)
 
-        self.assertEqual(result["score"], 1 / len(SEVERITY_CATEGORIES))
-        self.assertEqual(result["score_status"], "configured_uncalibrated_weights")
+        self.assertEqual(result["score"], 1.0)
+        self.assertEqual(result["score_status"], "research_weighted_severity")
 
     def test_weighted_score_requires_configured_weights_and_complete_signals(self):
         self.assertIsNone(weighted_score({"classifier": 0.8}, None))
@@ -250,13 +252,18 @@ class ResearchRiskTests(unittest.TestCase):
         self.assertIsNone(historical_risk(None, [0.4], retention=0.8))
         self.assertLess(historical_risk(0.1, [0.8], retention=0.8), 0.8)
 
-    def test_historical_retention_must_not_lock_state_permanently(self):
-        with patch.dict(os.environ, {"CHILDSAFELENS_HISTORICAL_RETENTION": "1"}):
-            with self.assertRaisesRegex(ValueError, "must be less than 1"):
-                _historical_component(
-                    [{"timestamp": 1_791_138_000_000}],
-                    {"value": 0.2, "lambda_per_second": 0.001},
-                )
+    def test_historical_component_computes_frequency_and_recency_without_model(self):
+        now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        result = _historical_component(
+            [{"timestamp": now.timestamp()}],
+            {"value": 1.0, "lambda_per_second": math.log(2) / 604800},
+            now,
+        )
+
+        self.assertEqual(result["status"], "computed")
+        self.assertEqual(result["features"]["frequency"], 1 / 7)
+        self.assertEqual(result["features"]["recency"], 1.0)
+        self.assertEqual(result["missing_components"], ["severity", "classifier_confidence"])
 
     def test_risk_state_has_explicit_boundaries_and_unknown_state(self):
         self.assertEqual(risk_state(None), "Not available")
@@ -307,7 +314,10 @@ class ResearchRiskTests(unittest.TestCase):
             weights={"attackers": 1, "concentration": 1, "frequency": 1},
         )
 
-        self.assertAlmostEqual(graph["graph_score"], (2 + (2 / 3) + 3) / 3)
+        self.assertAlmostEqual(
+            graph["graph_score"],
+            ((2 / 7) + (2 / 3) + (3 / 7)) / 3,
+        )
         self.assertEqual(graph["graph_score_status"], "computed_development_metric")
         self.assertEqual(
             graph["graph_score_weight_status"],
@@ -335,6 +345,56 @@ class ResearchRiskTests(unittest.TestCase):
         self.assertEqual(graph["graph_score_status"], "no_history")
         self.assertEqual(len(graph["edges"]), 0)
         self.assertEqual(graph["nodes"], [])
+
+    def test_deterministic_fusion_renormalizes_available_features_and_reports_contributions(self):
+        result = deterministic_risk_fusion({"P": 0.8, "S": 0.2})
+
+        self.assertEqual(result["score"], 50)
+        self.assertAlmostEqual(result["raw_score"], 0.5)
+        self.assertEqual(result["renormalized_weights"], {"P": 0.5, "S": 0.5})
+        contributions = {
+            item["feature"]: item["contribution_percent"]
+            for item in result["feature_contributions"]
+        }
+        self.assertAlmostEqual(contributions["P"], 80)
+        self.assertAlmostEqual(contributions["S"], 20)
+
+    def test_temporal_component_uses_available_incident_count_and_recency(self):
+        from research_risk import _temporal_component
+
+        now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        incidents = [{"timestamp": now.timestamp()} for _ in range(7)]
+        result = _temporal_component(incidents, now)
+
+        self.assertEqual(result["status"], "computed")
+        self.assertEqual(result["frequency"], 1.0)
+        self.assertEqual(result["recency"], 1.0)
+        self.assertEqual(result["value"], 1.0)
+
+    def test_escalation_uses_only_incidents_with_actual_severity_indicators(self):
+        from research_risk import _escalation_component
+
+        now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        incidents = [
+            {
+                "timestamp": (now - timedelta(days=1)).timestamp(),
+                "severity_evidence": {
+                    "analysis_status": "completed",
+                    "indicators": ["insult"],
+                },
+            },
+            {
+                "timestamp": now.timestamp(),
+                "severity_evidence": {
+                    "analysis_status": "completed",
+                    "indicators": ["threat"],
+                },
+            },
+        ]
+        result = _escalation_component(incidents)
+
+        self.assertEqual(result["status"], "computed")
+        self.assertAlmostEqual(result["value"], 0.25)
 
     def test_analytics_counts_only_incidents_in_the_supplied_history(self):
         now = datetime(2026, 10, 4, tzinfo=timezone.utc)

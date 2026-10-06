@@ -69,6 +69,11 @@ const displayComponentValue = (
 const displayEvidenceCount = (value: number | null | undefined) =>
   typeof value === 'number' && Number.isFinite(value) ? String(value) : 'Not available';
 
+const displayResearchPercent = (value: number | null | undefined) =>
+  typeof value === 'number' && Number.isFinite(value)
+    ? `${(value * 100).toFixed(1)}%`
+    : 'Not available';
+
 const DashboardScreen: React.FC = () => {
   const router = useRouter();
 
@@ -97,6 +102,7 @@ const DashboardScreen: React.FC = () => {
   const [riskExplanation, setRiskExplanation] = useState<IncidentExplanation | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const currentTextAvailable = currentMessageAnalysis?.text_status === 'available';
 
   const loadData = useCallback(async () => {
     if (!parentEmail) return;
@@ -147,9 +153,10 @@ const DashboardScreen: React.FC = () => {
         setIncomingIncidents([]);
         return;
       }
+      const currentAnalysis = getCurrentMessageAnalysis(parentEmail, currentChildId);
       const [allIncidents, childRisk, timeline, graph] = await Promise.all([
         fetchAlerts(parentEmail, currentChildId),
-        fetchResearchRisk(parentEmail, currentChildId),
+        fetchResearchRisk(parentEmail, currentChildId, currentAnalysis),
         currentChildId
           ? fetchChildRiskTimeline(currentChildId, parentEmail)
           : Promise.resolve(null),
@@ -159,7 +166,7 @@ const DashboardScreen: React.FC = () => {
       ]);
       setStats(await fetchDashboardStats(allIncidents));
       setResearchRisk(childRisk);
-      setCurrentMessageAnalysis(getCurrentMessageAnalysis(parentEmail, currentChildId));
+      setCurrentMessageAnalysis(currentAnalysis);
       setRiskTimeline(timeline);
       setSocialGraph(graph);
       const latestIncident = allIncidents.reduce<IncidentType | null>(
@@ -383,21 +390,29 @@ const DashboardScreen: React.FC = () => {
                   <Text style={styles.researchRiskNote}>
                     {researchRisk?.message ?? 'Loading risk assessment status.'}
                   </Text>
+                  {researchRisk?.risk_disclaimer && (
+                    <Text style={styles.researchRiskNote}>{researchRisk.risk_disclaimer}</Text>
+                  )}
                   <Text style={styles.researchRiskSubheading}>Risk components</Text>
                   {riskComponentLabels.map(([key, label]) => {
                     const component = researchRisk?.components[key];
+                    const currentValue = key === 'targeting'
+                      ? currentMessageAnalysis?.targeting_score
+                      : key === 'severity'
+                        ? currentMessageAnalysis?.severity_score
+                        : undefined;
                     return (
                       <View key={key} style={styles.researchRiskRow}>
                         <Text style={styles.researchRiskText}>{label}</Text>
                         <Text style={styles.researchRiskValueSmall}>
-                          {key === 'historical' && component?.observed_incident_count !== undefined
-                            ? `${component.observed_incident_count} observed`
-                            : key === 'temporal' && researchRisk?.history_metrics
-                            ? `${researchRisk.history_metrics.total_incidents ?? 0} observed incidents across ${researchRisk.history_metrics.active_days ?? 0} active days`
-                            : key === 'classifier_probability' && currentMessageAnalysis
+                          {key === 'classifier_probability' && currentMessageAnalysis
                               ? currentMessageAnalysis.probability === null
                                 ? 'Not available'
                                 : String(currentMessageAnalysis.probability)
+                            : typeof currentValue === 'number'
+                              ? displayResearchPercent(currentValue)
+                              : ['targeting', 'severity', 'multimodal', 'temporal', 'escalation', 'social_graph', 'historical'].includes(key)
+                                ? displayResearchPercent(component?.value)
                             : displayComponentValue(
                               component?.value,
                               component?.status,
@@ -420,26 +435,52 @@ const DashboardScreen: React.FC = () => {
                             Evidence: {(currentMessageAnalysis?.targeting_evidence ?? component?.evidence ?? []).join(', ') || 'Insufficient evidence'}
                           </Text>
                         ) : null}
-                        {key === 'severity' && (currentMessageAnalysis || component?.evidence?.length) ? (
+                        {key === 'severity' && (
                           <Text style={styles.researchRiskNote}>
-                            Evidence: {(currentMessageAnalysis?.severity_evidence ?? component?.evidence ?? []).join(', ') || 'Insufficient evidence'}
+                            {currentMessageAnalysis
+                              ? `Current message evidence: ${currentMessageAnalysis.severity_evidence.join(', ') || 'None observed'}`
+                              : 'No current message severity evidence is available. Historical severity evidence is shown only in the timeline.'}
                           </Text>
-                        ) : null}
+                        )}
                         {key === 'historical' && (
                           <Text style={styles.researchRiskNote}>
-                            Historical risk score: Not available — no trained child-risk model.
+                            {`Historical risk score from ${component?.observed_incident_count ?? 0} stored incident(s); research-derived, not validated.`}
+                          </Text>
+                        )}
+                        {key === 'temporal' && researchRisk?.history_metrics && (
+                          <Text style={styles.researchRiskNote}>
+                            {`${researchRisk.history_metrics.total_incidents ?? 0} observed incidents across ${researchRisk.history_metrics.active_days ?? 0} active days.`}
                           </Text>
                         )}
                         {key === 'multimodal' && (
                           <Text style={styles.researchRiskNote}>
-                            Text: {currentMessageAnalysis
-                              ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
-                              : component?.text_status === 'available' ? 'Available' : 'Not provided'} · Image: {component?.image_status ?? 'Not provided'} · Audio: {component?.audio_status ?? 'Not provided'} · Video: {component?.video_status ?? 'Not provided'}
+                            {currentTextAvailable
+                              ? 'Analysis status: Completed using available text evidence. Image, audio, and video were skipped because they were not provided.'
+                              : `Text: ${currentMessageAnalysis
+                                ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
+                                : component?.text_status === 'available' ? 'Available' : 'Not provided'} · Image: ${component?.image_status ?? 'Not provided'} · Audio: ${component?.audio_status ?? 'Not provided'} · Video: ${component?.video_status ?? 'Not provided'}`}
                           </Text>
                         )}
                       </View>
                     );
                   })}
+                  <Text style={styles.researchRiskSubheading}>
+                    Research feature contributions (deterministic; not SHAP)
+                  </Text>
+                  {researchRisk?.deterministic_contributions?.length ? (
+                    researchRisk.deterministic_contributions.map(item => (
+                      <View key={item.feature} style={styles.researchRiskRow}>
+                        <Text style={styles.researchRiskText}>{item.feature}</Text>
+                        <Text style={styles.researchRiskValueSmall}>
+                          {`${item.contribution_percent.toFixed(1)}%`}
+                        </Text>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.researchRiskNote}>
+                      No risk feature contributions are available.
+                    </Text>
+                  )}
                   <Text style={styles.researchRiskSubheading}>Risk timeline</Text>
                   {!riskTimeline || riskTimeline.timeline.length === 0 ? (
                     <Text style={styles.researchRiskNote}>

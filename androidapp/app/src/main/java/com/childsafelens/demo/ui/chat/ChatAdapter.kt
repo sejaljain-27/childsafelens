@@ -10,12 +10,13 @@ import androidx.recyclerview.widget.RecyclerView
 import com.childsafelens.demo.R
 import com.childsafelens.demo.data.model.Message
 import com.childsafelens.demo.data.model.Sender
+import com.childsafelens.demo.data.model.textFor
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 class ChatAdapter(
-    private val isChildPerspective: Boolean = true
+    private val viewer: Sender = Sender.CHILD
 ) : ListAdapter<Message, RecyclerView.ViewHolder>(MessageDiffCallback()) {
 
     companion object {
@@ -25,11 +26,7 @@ class ChatAdapter(
 
     override fun getItemViewType(position: Int): Int {
         val message = getItem(position)
-        return if (isChildPerspective) {
-            if (message.sender == Sender.CHILD) VIEW_TYPE_RIGHT else VIEW_TYPE_LEFT
-        } else {
-            if (message.sender == Sender.SIMULATED_CONTACT) VIEW_TYPE_RIGHT else VIEW_TYPE_LEFT
-        }
+        return if (message.sender == viewer) VIEW_TYPE_RIGHT else VIEW_TYPE_LEFT
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
@@ -46,18 +43,15 @@ class ChatAdapter(
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         val message = getItem(position)
         val timeStr = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
-        holder.itemView.visibility = if (message.displayText.isBlank()) View.GONE else View.VISIBLE
+        val displayText = message.textFor(viewer)
+        holder.itemView.visibility = if (displayText.isBlank()) View.GONE else View.VISIBLE
 
         if (holder is RightViewHolder) {
-            holder.tvMessage.text = message.displayText
+            holder.tvMessage.text = displayText
             holder.tvTime.text = timeStr
         } else if (holder is LeftViewHolder) {
             holder.tvTime.text = timeStr
-            if (message.isBlockedByParent) {
-                holder.tvMessage.text = "⚠️ You can't view this message"
-            } else {
-                holder.tvMessage.text = message.displayText
-            }
+            holder.tvMessage.text = displayText
         }
     }
 

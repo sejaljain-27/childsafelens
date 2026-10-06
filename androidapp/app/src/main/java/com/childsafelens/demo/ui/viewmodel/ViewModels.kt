@@ -233,9 +233,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             text = text,
             sender = sender,
             timestamp = System.currentTimeMillis(),
-            displayText = if (isIncoming) "" else text,
+            displayText = "",
             isRevealed = !isIncoming,
-            visibleToReceiver = !isIncoming,
+            visibleToReceiver = false,
             classificationStatus = "Checking backend"
         )
         addMessage(message)
@@ -287,7 +287,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
 
         val isIncoming = (type == "INCOMING")
-        val hideInitially = isIncoming && policy.requiresParentApproval
+        val hideInitially = policy.requiresParentApproval
         setClassificationState(
             message.id,
             riskLevel,
@@ -311,8 +311,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         "ALLOW", "SHOW" -> updateMessageState(message.id, filteredText, true, false)
                         "BLOCK", "HIDE" -> updateMessageState(
                             message.id,
-                            if (type == "INCOMING") "⚠️ You can't view this message" else "Message was not sent",
-                            true,
+                            "",
+                            false,
                             true
                         )
                         "EDIT" -> updateMessageState(
@@ -413,9 +413,9 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             text = text,
             sender = sender,
             timestamp = System.currentTimeMillis(),
-            displayText = if (isIncoming) "" else text,
+            displayText = "",
             isRevealed = !isIncoming,
-            visibleToReceiver = !isIncoming,
+            visibleToReceiver = false,
             classificationStatus = "Checking backend"
         )
         addMessage(message)
@@ -466,7 +466,7 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
 
         val isIncoming = (type == "INCOMING")
-        val hideInitially = isIncoming && policy.requiresParentApproval
+        val hideInitially = policy.requiresParentApproval
         setClassificationState(
             message.id,
             riskLevel,
@@ -490,8 +490,8 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
                         "ALLOW", "SHOW" -> updateMessageState(message.id, filteredText, true, false)
                         "BLOCK", "HIDE" -> updateMessageState(
                             message.id,
-                            if (type == "INCOMING") "⚠️ You can't view this message" else "Message was not sent",
-                            true,
+                            "",
+                            false,
                             true
                         )
                         "EDIT" -> updateMessageState(

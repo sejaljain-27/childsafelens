@@ -30,6 +30,26 @@ TARGETING_SIGNALS = (
 )
 TARGETING_FEATURES = (*TARGETING_SIGNALS, "second_person_reference")
 SOCIAL_GRAPH_FEATURES = ("attackers", "concentration", "frequency")
+TARGETING_RESEARCH_WEIGHTS = {name: 1.0 for name in TARGETING_FEATURES}
+SEVERITY_RESEARCH_WEIGHTS = {
+    "insult": 0.20,
+    "harassment": 0.35,
+    "humiliation": 0.40,
+    "threat": 0.70,
+    "blackmail": 0.80,
+    "physical_harm": 1.00,
+}
+FUSION_FEATURES = ("P", "D", "S", "M", "T", "E", "G", "H")
+FUSION_RESEARCH_WEIGHTS = {
+    "P": 0.20,
+    "D": 0.15,
+    "S": 0.20,
+    "M": 0.10,
+    "T": 0.10,
+    "E": 0.10,
+    "G": 0.05,
+    "H": 0.10,
+}
 _GRAPH_PSEUDONYM_KEY = secrets.token_bytes(32)
 _SECOND_PERSON_REFERENCE = re.compile(
     r"(?<!\w)(?:you|your|yours|yourself|yourselves)(?!\w)",
@@ -210,9 +230,12 @@ def targeting_evidence(
         indicators[name] is True
         for name in TARGETING_SIGNALS
     )
-    normalized_weights = _normalized_weights(weights, available) if weights else None
+    effective_weights = weights or _research_weights(
+        "targeting", TARGETING_RESEARCH_WEIGHTS
+    )
+    normalized_weights = _normalized_weights(effective_weights, available) if available else None
     score = None
-    if direct_targeting_evidence and normalized_weights is not None:
+    if normalized_weights is not None:
         score = sum(
             normalized_weights[name] * float(value)
             for name, value in available.items()
@@ -234,7 +257,7 @@ def targeting_evidence(
             "computed_from_available_signals"
             if score is not None
             else "weights_not_configured"
-            if direct_targeting_evidence
+            if available
             else "insufficient_evidence_to_confirm_target"
         ),
     }
@@ -271,15 +294,21 @@ def severity_evidence(
         or text is not None
         or bool(observed)
     )
-    score = None
-    if has_evidence_source and weights is not None:
-        score = weighted_score(
-            {
-                category: float(category in observed)
-                for category in SEVERITY_CATEGORIES
-            },
-            weights,
-        )
+    score_weights = weights or _research_weights(
+        "severity", SEVERITY_RESEARCH_WEIGHTS
+    )
+    score = (
+        sum(
+            _bounded_value(
+                f"severity_weight_{category}", float(score_weights[category])
+            )
+            for category in observed
+        ) / len(observed)
+        if observed and all(category in score_weights for category in observed)
+        else 0.0
+        if has_evidence_source
+        else None
+    )
     return {
         "status": "available" if observed else "insufficient_evidence",
         "analysis_status": (
@@ -301,9 +330,11 @@ def severity_evidence(
         ],
         "score": score,
         "score_status": (
-            "configured_uncalibrated_weights"
-            if score is not None
-            else "uncalibrated_weights"
+            "research_weighted_severity"
+            if score is not None and observed
+            else "no_severity_indicators"
+            if score == 0
+            else "insufficient_evidence"
         ),
     }
 
@@ -346,6 +377,36 @@ def _configured_parameter(
         )
         raise ValueError(f"{name} must be finite and {bounds}.")
     return value
+
+
+def _research_weights(prefix: str, defaults: Mapping[str, float]) -> dict[str, float]:
+    weights = dict(defaults)
+    for name, default in defaults.items():
+        env_name = f"CHILDSAFELENS_{prefix.upper()}_{name.upper()}_WEIGHT"
+        raw_value = os.environ.get(env_name)
+        if raw_value is None:
+            weights[name] = default
+            continue
+        try:
+            value = float(raw_value)
+        except ValueError as error:
+            raise ValueError(f"{env_name} must be a number.") from error
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{env_name} must be finite and non-negative.")
+        weights[name] = value
+    if not any(weight > 0 for weight in weights.values()):
+        raise ValueError(f"At least one {prefix} research weight must be positive.")
+    return weights
+
+
+def _research_parameter(
+    name: str,
+    default: float,
+    minimum: float = 0,
+    maximum: float | None = None,
+) -> float:
+    configured = _configured_parameter(name, minimum, maximum)
+    return default if configured is None else configured
 
 
 def temporal_risk(
@@ -413,58 +474,101 @@ def _temporal_component(
             "observed_incident_count": 0,
             "lambda_per_second": None,
         }
-    dated_incident_count = sum(
-        _timestamp_seconds(incident.get("timestamp")) is not None
+    dated_timestamps = [
+        timestamp
         for incident in incidents
+        if (timestamp := _timestamp_seconds(incident.get("timestamp"))) is not None
+    ]
+    frequency_reference = _research_parameter(
+        "CHILDSAFELENS_TEMPORAL_REFERENCE_COUNT", 7, minimum=0.000001
     )
-    if not dated_incident_count:
-        return {
-            "value": None,
-            "status": "insufficient_dated_history",
-            "observed_incident_count": len(incidents),
-            "dated_incident_count": 0,
-            "lambda_per_second": None,
-        }
-    decay = _configured_parameter(
-        "CHILDSAFELENS_TEMPORAL_DECAY_PER_SECOND", minimum=0
+    frequency = min(len(incidents) / frequency_reference, 1.0)
+    decay = _research_parameter(
+        "CHILDSAFELENS_TEMPORAL_DECAY_PER_SECOND",
+        math.log(2) / (7 * 24 * 60 * 60),
+        minimum=0.000000000001,
     )
-    if decay is None:
-        return {
-            "value": None,
-            "status": "observed_descriptive",
-            "observed_incident_count": len(incidents),
-            "dated_incident_count": dated_incident_count,
-            "lambda_per_second": None,
-        }
-    if decay == 0:
-        raise ValueError("CHILDSAFELENS_TEMPORAL_DECAY_PER_SECOND must be positive.")
-    value = temporal_risk(incidents, now, decay)
+    frequency_weight = _research_parameter(
+        "CHILDSAFELENS_TEMPORAL_FREQUENCY_WEIGHT", 0.6, minimum=0, maximum=1
+    )
+    recency_weight = _research_parameter(
+        "CHILDSAFELENS_TEMPORAL_RECENCY_WEIGHT", 0.4, minimum=0, maximum=1
+    )
+    if frequency_weight + recency_weight <= 0:
+        raise ValueError("Temporal frequency and recency weights cannot both be zero.")
+    recency = (
+        math.exp(-decay * max(0.0, now.timestamp() - max(dated_timestamps)))
+        if dated_timestamps
+        else None
+    )
+    components = {"frequency": frequency, "recency": recency}
+    available_weights = {
+        name: weight
+        for name, weight in (
+            ("frequency", frequency_weight),
+            ("recency", recency_weight),
+        )
+        if components[name] is not None
+    }
+    normalized_weights = _normalized_weights(available_weights, available_weights)
+    value = sum(
+        normalized_weights[name] * float(components[name])
+        for name in available_weights
+    )
     return {
         "value": value,
-        "status": (
-            "computed"
-            if value is not None
-            else "insufficient_incident_or_targeting_scores"
-        ),
+        "status": "computed",
         "observed_incident_count": len(incidents),
+        "dated_incident_count": len(dated_timestamps),
         "lambda_per_second": decay,
-        "formula": "repetition_plus_recency",
+        "frequency": frequency,
+        "recency": recency,
+        "weights": normalized_weights,
+        "missing_components": ["recency"] if recency is None else [],
+        "formula": "weighted_available_frequency_and_recency",
     }
 
 
-def _stored_severity_score(incident: Mapping[str, Any]) -> float | None:
+def _incident_severity_score(incident: Mapping[str, Any]) -> float | None:
     evidence = incident.get("severity_evidence")
     if not isinstance(evidence, Mapping):
         return None
+    indicators = evidence.get("indicators")
+    if isinstance(indicators, (list, tuple)):
+        observed = sorted(
+            {
+                value
+                for value in indicators
+                if isinstance(value, str) and value in SEVERITY_CATEGORIES
+            }
+        )
+        if observed:
+            weights = _research_weights("severity", SEVERITY_RESEARCH_WEIGHTS)
+            return sum(weights[name] for name in observed) / len(observed)
+        if evidence.get("analysis_status") == "completed":
+            return 0.0
     value = evidence.get("score")
-    if value is None:
-        return None
-    return _bounded_value("severity_score", float(value))
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and 0 <= value <= 1
+    ):
+        return float(value)
+    return None
 
 
 def _escalation_component(
     incidents: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    undated_severities = []
+    for incident in incidents:
+        severity = _incident_severity_score(incident)
+        if (
+            severity is not None
+            and _timestamp_seconds(incident.get("timestamp")) is None
+        ):
+            undated_severities.append(severity)
     if not incidents:
         return {
             "value": None,
@@ -478,156 +582,130 @@ def _escalation_component(
         for incident in incidents
         if (occurred_at := _timestamp_seconds(incident.get("timestamp"))) is not None
     ]
-    if not dated:
-        return {
-            "value": None,
-            "status": "insufficient_dated_history",
-            "observed_severity_count": 0,
-            "alpha": None,
-        }
-
     dated.sort(key=lambda item: item[0])
-    current_timestamp, current_incident = dated[-1]
-    current_severity = _stored_severity_score(current_incident)
-    earlier_scores = [
-        score
-        for occurred_at, incident in dated[:-1]
-        if occurred_at < current_timestamp
-        if (score := _stored_severity_score(incident)) is not None
+    observations = [
+        (timestamp, score)
+        for timestamp, incident in dated
+        if (score := _incident_severity_score(incident)) is not None
     ]
-    if current_severity is None:
+    if not observations:
+        if undated_severities:
+            return {
+                "value": 0.0,
+                "status": "computed",
+                "observed_severity_count": len(undated_severities),
+                "reason": (
+                    "Severity evidence exists, but timestamps are unavailable to "
+                    "establish an increasing trend; neutral score used."
+                ),
+                "alpha": None,
+            }
         return {
             "value": None,
-            "status": "current_severity_unavailable",
-            "observed_severity_count": len(earlier_scores),
+            "status": "severity_history_unavailable",
+            "observed_severity_count": 0,
+            "reason": "No stored incident has valid severity evidence.",
             "alpha": None,
         }
-    if not earlier_scores:
-        return {
-            "value": None,
-            "status": "insufficient_severity_history",
-            "observed_severity_count": 1,
-            "current_severity": current_severity,
-            "alpha": None,
-        }
-
-    alpha = _configured_parameter("CHILDSAFELENS_ESCALATION_ALPHA", 0, 1)
-    if alpha is None or alpha == 0:
-        if alpha == 0:
-            raise ValueError("CHILDSAFELENS_ESCALATION_ALPHA must be greater than 0.")
-        return {
-            "value": None,
-            "status": "alpha_not_configured",
-            "observed_severity_count": len(earlier_scores) + 1,
-            "current_severity": current_severity,
-            "alpha": None,
-        }
-
+    alpha = _research_parameter(
+        "CHILDSAFELENS_ESCALATION_ALPHA", 0.5, minimum=0.000001, maximum=1
+    )
+    ema = observations[0][1]
+    previous_ema = ema
+    for _, severity in observations[1:]:
+        previous_ema = ema
+        ema = alpha * severity + (1 - alpha) * ema
+    score = max(0.0, ema - previous_ema) if len(observations) > 1 else 0.0
     return {
-        "value": escalation_score(current_severity, earlier_scores, alpha),
+        "value": score,
         "status": "computed",
-        "observed_severity_count": len(earlier_scores) + 1,
-        "current_severity": current_severity,
+        "observed_severity_count": len(observations),
+        "current_severity": observations[-1][1],
+        "recent_ema": ema,
+        "previous_ema": previous_ema if len(observations) > 1 else None,
         "alpha": alpha,
-        "formula": "increase_over_previous_severity_ema",
+        "reason": (
+            "Increasing severity trend observed in available incident history."
+            if score > 0
+            else "No increasing severity trend observed in available incident history."
+        ),
+        "formula": "positive_increase_between_recent_and_previous_severity_ema",
     }
 
 
 def _historical_component(
     incidents: list[Mapping[str, Any]],
     current_temporal: Mapping[str, Any],
+    now: datetime,
 ) -> dict[str, Any]:
     if not incidents:
         return {
             "value": None,
             "status": "no_history",
             "observed_incident_count": 0,
-            "eta": None,
-            "previous_state": None,
+            "features": {},
         }
 
-    eta = _configured_parameter("CHILDSAFELENS_HISTORICAL_RETENTION", 0, 1)
-    if eta is None:
-        return {
-            "value": None,
-            "status": "eta_not_configured",
-            "observed_incident_count": len(incidents),
-            "eta": None,
-            "previous_state": None,
-        }
-    if eta == 1:
-        raise ValueError("CHILDSAFELENS_HISTORICAL_RETENTION must be less than 1.")
-
-    current_risk = current_temporal.get("value")
-    if current_risk is None:
-        return {
-            "value": None,
-            "status": "temporal_risk_unavailable",
-            "observed_incident_count": len(incidents),
-            "eta": eta,
-            "previous_state": None,
-        }
-
-    decay = current_temporal.get("lambda_per_second")
-    if decay is None:
-        return {
-            "value": None,
-            "status": "decay_parameter_not_configured",
-            "observed_incident_count": len(incidents),
-            "eta": eta,
-            "previous_state": None,
-        }
-
-    dated_records = [
-        (timestamp, incident)
+    reference_count = _research_parameter(
+        "CHILDSAFELENS_TEMPORAL_REFERENCE_COUNT", 7, minimum=0.000001
+    )
+    severity_values = [
+        value
+        for incident in incidents
+        if (value := _incident_severity_score(incident)) is not None
+    ]
+    classifier_values = [
+        value
+        for incident in incidents
+        if (value := stored_classifier_probability(incident)) is not None
+    ]
+    timestamps = [
+        timestamp
         for incident in incidents
         if (timestamp := _timestamp_seconds(incident.get("timestamp"))) is not None
     ]
-    if len(dated_records) != len(incidents):
-        return {
-            "value": None,
-            "status": "insufficient_dated_history",
-            "observed_incident_count": len(incidents),
-            "eta": eta,
-            "previous_state": None,
-        }
-    dated_records.sort(key=lambda record: record[0])
-
-    previous_state: float | None = None
-    for index, (timestamp, _) in enumerate(dated_records[:-1]):
-        point_in_time = datetime.fromtimestamp(timestamp, timezone.utc)
-        temporal_at_event = temporal_risk(
-            [incident for _, incident in dated_records[: index + 1]],
-            point_in_time,
-            float(decay),
-        )
-        if temporal_at_event is None:
-            return {
-                "value": None,
-                "status": "previous_temporal_risk_unavailable",
-                "observed_incident_count": len(incidents),
-                "eta": eta,
-                "previous_state": None,
-            }
-        previous_state = historical_risk(
-            temporal_at_event,
-            [previous_state] if previous_state is not None else [],
-            eta,
-        )
-
-    historical_value = historical_risk(
-        float(current_risk),
-        [previous_state] if previous_state is not None else [],
-        eta,
+    decay = current_temporal.get("lambda_per_second")
+    recency = (
+        math.exp(-float(decay) * max(0.0, now.timestamp() - max(timestamps)))
+        if timestamps and isinstance(decay, (int, float))
+        else None
+    )
+    values: dict[str, float | None] = {
+        "frequency": min(len(incidents) / reference_count, 1.0),
+        "recency": recency,
+        "severity": sum(severity_values) / len(severity_values) if severity_values else None,
+        "classifier_confidence": (
+            sum(classifier_values) / len(classifier_values)
+            if classifier_values
+            else None
+        ),
+    }
+    weights = _research_weights(
+        "historical",
+        {
+            "frequency": 0.25,
+            "recency": 0.25,
+            "severity": 0.25,
+            "classifier_confidence": 0.25,
+        },
+    )
+    available = {name: value for name, value in values.items() if value is not None}
+    normalized_weights = _normalized_weights(
+        {name: weights[name] for name in available},
+        available,
+    )
+    historical_value = sum(
+        normalized_weights[name] * float(value)
+        for name, value in available.items()
     )
     return {
         "value": historical_value,
         "status": "computed",
         "observed_incident_count": len(incidents),
-        "eta": eta,
-        "previous_state": previous_state,
-        "current_temporal_risk": current_risk,
-        "formula": "eta_previous_state_plus_one_minus_eta_temporal_risk",
+        "features": values,
+        "weights": normalized_weights,
+        "missing_components": [name for name, value in values.items() if value is None],
+        "formula": "weighted_available_historical_frequency_recency_severity_classifier",
     }
 
 
@@ -714,23 +792,57 @@ def social_graph(
         "concentration": concentration,
         "frequency": interaction_count,
     }
-    normalized_weights = _normalized_weights(weights, SOCIAL_GRAPH_FEATURES)
+    reference_count = _research_parameter(
+        "CHILDSAFELENS_GRAPH_REFERENCE_COUNT", 7, minimum=0.000001
+    )
+    scoring_features: dict[str, float | None] = {
+        "attackers": (
+            min(len(identified_senders) / reference_count, 1.0)
+            if interaction_count
+            else None
+        ),
+        "concentration": concentration,
+        "frequency": (
+            min(interaction_count / reference_count, 1.0)
+            if interaction_count
+            else None
+        ),
+    }
+    effective_weights = weights or _research_weights(
+        "graph",
+        {"attackers": 0.30, "concentration": 0.40, "frequency": 0.30},
+    )
+    available_features = {
+        name: value
+        for name, value in scoring_features.items()
+        if value is not None
+    }
+    selected_weights = {
+        name: effective_weights[name]
+        for name in available_features
+        if name in effective_weights
+    }
+    normalized_weights = (
+        _normalized_weights(selected_weights, selected_weights)
+        if available_features and len(selected_weights) == len(available_features)
+        else None
+    )
     graph_score = None
-    score_status = "weights_not_configured"
-    if records and not complete_interaction_data:
-        score_status = "insufficient_interaction_data"
-    elif not records:
+    score_status = "insufficient_interaction_data"
+    if not records:
         score_status = "no_history"
-    elif normalized_weights is None:
+    elif interaction_count and normalized_weights is None:
         score_status = "weights_not_configured"
-    elif any(value is None for value in features.values()):
-        score_status = "insufficient_interaction_data"
-    else:
+    elif interaction_count and normalized_weights is not None:
         graph_score = sum(
-            normalized_weights[name] * float(features[name])
-            for name in SOCIAL_GRAPH_FEATURES
+            normalized_weights[name] * float(scoring_features[name])
+            for name in normalized_weights
         )
-        score_status = "computed_development_metric"
+        score_status = (
+            "computed_development_metric"
+            if complete_interaction_data
+            else "computed_from_observed_relationships"
+        )
 
     pseudonyms = {
         sender: hmac.new(
@@ -755,50 +867,59 @@ def social_graph(
             else (
                 "available"
                 if complete_interaction_data
+                else "partial_observed_relationships"
+                if interaction_count
                 else "insufficient_interaction_data"
             )
         ),
         "interaction_count": interaction_count,
         "attacker_count": (
-            len(identified_senders) if complete_interaction_data and records else None
+            len(identified_senders) if interaction_count else None
         ),
         "observed_attacker_count": len(identified_senders),
         "repeated_attacker_count": (
             sum(count > 1 for count in identified_senders.values())
-            if complete_interaction_data and records
+            if interaction_count
             else None
         ),
         "incident_concentration": (
-            concentration if complete_interaction_data and records else None
+            concentration if interaction_count else None
         ),
         "features": {
             "attackers": {
-                "value": features["attackers"] if complete_interaction_data else None,
+                "value": features["attackers"] if interaction_count else None,
                 "observed_value": features["attackers"],
                 "status": (
                     "computed"
                     if complete_interaction_data and records
+                    else "computed_from_observed_relationships"
+                    if interaction_count
                     else ("no_history" if not records else "incomplete_interaction_data")
                 ),
             },
             "concentration": {
-                "value": concentration if complete_interaction_data else None,
+                "value": concentration if interaction_count else None,
                 "status": (
                     "computed"
                     if complete_interaction_data and concentration is not None
+                    else "computed_from_observed_relationships"
+                    if interaction_count and concentration is not None
                     else ("no_history" if not records else "incomplete_interaction_data")
                 ),
             },
             "frequency": {
-                "value": features["frequency"] if complete_interaction_data else None,
+                "value": features["frequency"] if interaction_count else None,
                 "observed_value": features["frequency"],
                 "status": (
                     "computed"
                     if complete_interaction_data and records
+                    else "computed_from_observed_relationships"
+                    if interaction_count
                     else ("no_history" if not records else "incomplete_interaction_data")
                 ),
             },
         },
+        "normalized_features": scoring_features,
         "graph_score": graph_score,
         "graph_score_status": score_status,
         "graph_score_weights": normalized_weights,
@@ -817,13 +938,82 @@ def social_graph(
     }
 
 
+def deterministic_risk_fusion(
+    components: Mapping[str, float | None],
+) -> dict[str, Any]:
+    weights = _research_weights("fusion", FUSION_RESEARCH_WEIGHTS)
+    available = {
+        name: _bounded_value(name, float(components[name]))
+        for name in FUSION_FEATURES
+        if components.get(name) is not None
+    }
+    selected_weights = {name: weights[name] for name in available}
+    normalized_weights = (
+        _normalized_weights(selected_weights, selected_weights)
+        if selected_weights and sum(selected_weights.values()) > 0
+        else None
+    )
+    weighted_sum = sum(weights[name] * value for name, value in available.items())
+    available_weight = sum(selected_weights.values())
+    raw_score = weighted_sum / available_weight if available_weight > 0 else None
+    contribution_share = {
+        name: (weights[name] * value / weighted_sum if weighted_sum else 0.0)
+        for name, value in available.items()
+    }
+    return {
+        "score": round(raw_score * 100) if raw_score is not None else None,
+        "raw_score": raw_score,
+        "status": "computed" if raw_score is not None else "insufficient_evidence",
+        "method": "research_derived_deterministic",
+        "validated": False,
+        "available_features": list(available),
+        "missing_features": [
+            name for name in FUSION_FEATURES if name not in available
+        ],
+        "configured_weights": weights,
+        "renormalized_weights": normalized_weights,
+        "feature_contributions": [
+            {
+                "feature": name,
+                "value": value,
+                "configured_weight": weights[name],
+                "renormalized_weight": (
+                    normalized_weights[name] if normalized_weights else None
+                ),
+                "contribution": contribution_share[name],
+                "contribution_percent": contribution_share[name] * 100,
+                "weighted_crs_points": (
+                    100 * normalized_weights[name] * value
+                    if normalized_weights
+                    else None
+                ),
+            }
+            for name, value in available.items()
+        ],
+        "contribution_status": (
+            "zero_risk" if weighted_sum == 0 else "computed"
+        ),
+        "formula": (
+            "round(100 * sum(available_weight * feature) / "
+            "sum(available_weight))"
+        ),
+        "disclaimer": (
+            "Research-derived deterministic risk score; not clinically or "
+            "scientifically validated."
+        ),
+    }
+
+
 def capability_status() -> dict[str, Any]:
     classifier = classifier_status()
-    severity_weights = configured_weights("severity", SEVERITY_CATEGORIES)
+    severity_weights = _research_weights("severity", SEVERITY_RESEARCH_WEIGHTS)
     incident_weights = configured_weights(
         "incident", ("classifier", "targeting", "severity", "multimodal")
     )
-    graph_weights = configured_weights("graph", SOCIAL_GRAPH_FEATURES)
+    graph_weights = _research_weights(
+        "graph",
+        {"attackers": 0.30, "concentration": 0.40, "frequency": 0.30},
+    )
     return {
         "classifier": classifier,
         "classification_disclaimer": (
@@ -844,6 +1034,12 @@ def capability_status() -> dict[str, Any]:
             "categories": classifier.get("categories", []),
         },
         "risk_fusion": risk_fusion_service.status(),
+        "deterministic_risk_fusion": {
+            "status": "available",
+            "method": "research_derived_deterministic",
+            "validated": False,
+            "weights": _research_weights("fusion", FUSION_RESEARCH_WEIGHTS),
+        },
         "explainability": risk_fusion_service.explainability_status(),
         "multimodal": {
             "audio": {
@@ -864,19 +1060,22 @@ def capability_status() -> dict[str, Any]:
             "severity_weights_configured": severity_weights is not None,
             "incident_weights_configured": incident_weights is not None,
             "social_graph_weights_configured": graph_weights is not None,
-            "temporal_decay_configured": os.environ.get(
-                "CHILDSAFELENS_TEMPORAL_DECAY_PER_SECOND"
-            ) is not None,
-            "escalation_alpha_configured": os.environ.get(
-                "CHILDSAFELENS_ESCALATION_ALPHA"
-            ) is not None,
-            "historical_retention_configured": os.environ.get(
-                "CHILDSAFELENS_HISTORICAL_RETENTION"
-            ) is not None,
+            "temporal_decay_configured": True,
+            "escalation_alpha_configured": True,
+            "historical_retention_configured": True,
+            "deterministic_fusion_weights_configured": True,
+            "severity_weights": severity_weights,
+            "fusion_weights": _research_weights("fusion", FUSION_RESEARCH_WEIGHTS),
+            "risk_thresholds": {
+                "warning": float(os.environ.get("CHILDSAFELENS_WARNING_THRESHOLD", "25")),
+                "high": float(os.environ.get("CHILDSAFELENS_HIGH_THRESHOLD", "50")),
+                "critical": float(os.environ.get("CHILDSAFELENS_CRITICAL_THRESHOLD", "75")),
+            },
         },
         "message": (
-            "CRS and SHAP are not available until a validated child-risk training "
-            "target and trained risk-fusion model are provided."
+            "Research-derived deterministic risk fusion uses available evidence and "
+            "is not clinically or scientifically validated. SHAP is available only "
+            "for an actual trained risk-fusion model."
         ),
     }
 
@@ -1054,10 +1253,61 @@ def _research_state(
     }
 
 
+def _targeting_score_from_evidence(evidence: Mapping[str, Any]) -> float | None:
+    stored_score = evidence.get("score")
+    if (
+        isinstance(stored_score, (int, float))
+        and not isinstance(stored_score, bool)
+        and math.isfinite(stored_score)
+        and 0 <= stored_score <= 1
+    ):
+        return float(stored_score)
+    indicators = evidence.get("indicators")
+    available: dict[str, bool] = {}
+    if isinstance(indicators, Mapping):
+        available = {
+            name: value
+            for name, value in indicators.items()
+            if name in TARGETING_FEATURES and isinstance(value, bool)
+        }
+    if not available:
+        supporting = evidence.get("supporting_evidence")
+        if isinstance(supporting, list):
+            available = {
+                name: True for name in supporting if name in TARGETING_FEATURES
+            }
+    if not available:
+        return None
+    weights = _research_weights("targeting", TARGETING_RESEARCH_WEIGHTS)
+    normalized = _normalized_weights(
+        {name: weights[name] for name in available},
+        available,
+    )
+    return sum(normalized[name] * float(value) for name, value in available.items())
+
+
+def _current_targeting_score(current_message: Mapping[str, Any]) -> float | None:
+    score = current_message.get("targeting_score")
+    if (
+        isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and math.isfinite(score)
+        and 0 <= score <= 1
+    ):
+        return float(score)
+    evidence = current_message.get("targeting_signals")
+    if not isinstance(evidence, Mapping):
+        evidence = {
+            "supporting_evidence": current_message.get("targeting_evidence", [])
+        }
+    return _targeting_score_from_evidence(evidence)
+
+
 def child_risk_assessment(
     incidents: Iterable[Mapping[str, Any]],
     child_id: str | None,
     now: datetime | None = None,
+    current_message: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     records = list(incidents)
     current_time = now or datetime.now(timezone.utc)
@@ -1114,12 +1364,69 @@ def child_risk_assessment(
     latest_severity = latest_incident.get("severity_evidence", {})
     if not isinstance(latest_severity, Mapping):
         latest_severity = {}
-    targeting_score = latest_incident.get(
-        "targeting_score", latest_targeting.get("score")
+    current_analysis = (
+        current_message
+        if current_message
+        and current_message.get("model_version") == CASCADE_MODEL_VERSION
+        and current_message.get("text_status") == "available"
+        else None
     )
-    severity_score = latest_severity.get("score")
-    targeting_evidence = latest_targeting.get("supporting_evidence", [])
-    severity_evidence = latest_severity.get("indicators", [])
+    current_probability = (
+        current_analysis.get("probability")
+        if current_analysis is not None
+        else None
+    )
+    if current_probability is not None:
+        if (
+            isinstance(current_probability, bool)
+            or not isinstance(current_probability, (int, float))
+            or not math.isfinite(current_probability)
+            or not 0 <= current_probability <= 1
+        ):
+            raise ValueError("Current classifier probability must be between 0 and 1.")
+        current_probability = float(current_probability)
+    targeting_score = (
+        _current_targeting_score(current_analysis)
+        if current_analysis is not None
+        else _targeting_score_from_evidence(latest_targeting)
+    )
+    severity_evidence = (
+        current_analysis.get("severity_evidence", [])
+        if current_analysis is not None
+        else latest_severity.get("indicators", [])
+    )
+    if not isinstance(severity_evidence, list):
+        severity_evidence = []
+    severity_evidence = [
+        item for item in severity_evidence
+        if isinstance(item, str) and item in SEVERITY_CATEGORIES
+    ]
+    severity_score = (
+        current_analysis.get("severity_score")
+        if current_analysis is not None
+        else _incident_severity_score(latest_incident)
+    )
+    if (
+        current_analysis is not None
+        and severity_score is None
+    ):
+        severity_score = (
+            sum(
+                _research_weights("severity", SEVERITY_RESEARCH_WEIGHTS)[name]
+                for name in set(severity_evidence)
+            ) / len(set(severity_evidence))
+            if severity_evidence
+            else 0.0
+        )
+    if severity_score is not None:
+        severity_score = _bounded_value("severity_score", float(severity_score))
+    targeting_evidence = (
+        current_analysis.get("targeting_evidence", [])
+        if current_analysis is not None
+        else latest_targeting.get("supporting_evidence", [])
+    )
+    if not isinstance(targeting_evidence, list):
+        targeting_evidence = []
     latest_classifier_output = latest_incident.get("classifierOutput", {})
     if not isinstance(latest_classifier_output, Mapping):
         latest_classifier_output = {}
@@ -1129,9 +1436,15 @@ def child_risk_assessment(
     latest_model_version = latest_incident.get("modelVersion") or (
         latest_classifier_output.get("modelVersion")
     )
-    classifier_probability = stored_classifier_probability(latest_incident)
+    classifier_probability = (
+        current_probability
+        if current_analysis is not None and current_probability is not None
+        else stored_classifier_probability(latest_incident)
+    )
     text_available = (
-        bool(latest_incident.get("textEvidenceAvailable"))
+        True
+        if current_analysis is not None
+        else bool(latest_incident.get("textEvidenceAvailable"))
         if "textEvidenceAvailable" in latest_incident
         else bool(
             isinstance(latest_incident.get("messageSnippet"), str)
@@ -1149,33 +1462,21 @@ def child_risk_assessment(
         if isinstance(classifier_probability, (int, float))
         else "not_available"
     )
-    targeting_status = (
-        "computed"
-        if targeting_score is not None
-        else "observed_uncalibrated"
-        if targeting_signals
-        else "insufficient_evidence"
-    )
-    severity_status = (
-        "computed"
-        if severity_score is not None
-        else "observed_uncalibrated"
-        if severity_signals
-        else "insufficient_evidence"
-    )
+    targeting_status = "computed" if targeting_score is not None else "insufficient_evidence"
+    severity_status = "computed" if severity_score is not None else "insufficient_evidence"
     temporal_component = _temporal_component(records, current_time)
     escalation_component = _escalation_component(records)
-    historical_feature = _historical_component(records, temporal_component)
-    historical_component = {
-        "value": None,
-        "status": "child_risk_model_not_configured",
-        "observed_incident_count": len(records),
-        "reason": "No trained child-risk model is configured.",
-    }
+    historical_component = _historical_component(
+        records, temporal_component, current_time
+    )
+    historical_feature = historical_component
     graph = social_graph(
         records,
         child_id,
-        weights=configured_weights("graph", SOCIAL_GRAPH_FEATURES),
+        weights=_research_weights(
+            "graph",
+            {"attackers": 0.30, "concentration": 0.40, "frequency": 0.30},
+        ),
     )
     research_state = _research_state(
         records,
@@ -1185,6 +1486,60 @@ def child_risk_assessment(
         historical_component,
         capabilities["classifier"],
     )
+    multimodal_score = (
+        classifier_probability
+        if text_available and classifier_probability is not None
+        else severity_score
+        if text_available
+        else None
+    )
+    current_values = {
+        "P": classifier_probability,
+        "D": targeting_score,
+        "S": severity_score,
+        "M": multimodal_score,
+        "T": temporal_component.get("value"),
+        "E": escalation_component.get("value"),
+        "G": graph.get("graph_score"),
+        "H": historical_component.get("value"),
+    }
+    current_statuses = {
+        "P": classifier_component_status,
+        "D": targeting_status,
+        "S": severity_status,
+        "M": (
+            "computed_from_available_text"
+            if multimodal_score is not None
+            else "text_evidence_unavailable"
+        ),
+        "T": str(temporal_component.get("status", "temporal_unavailable")),
+        "E": str(escalation_component.get("status", "escalation_unavailable")),
+        "G": str(graph.get("graph_score_status", "social_graph_unavailable")),
+        "H": str(historical_component.get("status", "historical_unavailable")),
+    }
+    research_state["components"] = {
+        name: _observed_state_component(
+            current_values[name],
+            current_statuses[name],
+        )
+        for name in FUSION_FEATURES
+    }
+    research_state["component_order"] = list(FUSION_FEATURES)
+    available_count = sum(
+        item["value"] is not None
+        for item in research_state["components"].values()
+    )
+    research_state["status"] = (
+        "computed"
+        if available_count == len(FUSION_FEATURES)
+        else "partially_available"
+        if available_count
+        else "insufficient_evidence"
+    )
+    research_state["vector"] = [
+        research_state["components"][name]["value"]
+        for name in FUSION_FEATURES
+    ]
     latest_incident = max(
         records,
         key=lambda incident: (
@@ -1211,10 +1566,16 @@ def child_risk_assessment(
             "missing_features": risk_fusion_result["missing_features"],
         }
     )
-    crs = (
-        risk_fusion_result["score"] * 100
+    deterministic_fusion = deterministic_risk_fusion(current_values)
+    model_crs = (
+        round(risk_fusion_result["score"] * 100)
         if risk_fusion_result["score"] is not None
         else None
+    )
+    crs = (
+        model_crs
+        if model_crs is not None
+        else deterministic_fusion["score"]
     )
 
     return {
@@ -1246,6 +1607,15 @@ def child_risk_assessment(
             "targeting_evidence": targeting_evidence,
             "severity_evidence": severity_evidence,
         } if latest_incident else None,
+        "current_message": {
+            "classification": current_analysis.get("classification"),
+            "category": current_analysis.get("category"),
+            "classifier_probability": classifier_probability,
+            "model_version": current_analysis.get("model_version"),
+            "text_status": "available",
+            "targeting_evidence": targeting_evidence,
+            "severity_evidence": severity_evidence,
+        } if current_analysis is not None else None,
         "text_evidence": {
             "status": "available" if text_available else "not_provided",
             "targeting": targeting_evidence,
@@ -1259,15 +1629,29 @@ def child_risk_assessment(
         },
         "crs": crs,
         "risk_state": risk_state(crs),
+        "risk_method": (
+            "trained_risk_fusion_model"
+            if model_crs is not None
+            else "research_derived_deterministic"
+            if crs is not None
+            else "unavailable"
+        ),
+        "risk_disclaimer": deterministic_fusion["disclaimer"],
         "status": (
-            "computed"
+            "computed_model"
+            if model_crs is not None
+            else "computed_research_deterministic"
             if crs is not None
             else risk_fusion_result["status"]
         ),
         "risk_fusion": {
             **risk_fusion_result,
             "explanation": risk_fusion_explanation,
+            "deterministic_research_fusion": deterministic_fusion,
         },
+        "deterministic_contributions": deterministic_fusion[
+            "feature_contributions"
+        ],
         "research_state": research_state,
         "targeting_evidence_count": len(targeting_signals),
         "targeting_incident_count": incidents_with_targeting_evidence,
@@ -1279,16 +1663,20 @@ def child_risk_assessment(
         "components": {
             "classifier_probability": {
                 "value": classifier_probability,
-                "status": (
-                    "computed"
-                    if classifier_probability is not None
-                    else "not_available"
-                    if latest_incident
-                    else "no_current_message_prediction"
-                ),
-                "model_version": latest_model_version,
-                "scope": "message_level",
                 "status": classifier_component_status,
+                "model_version": (
+                    current_analysis.get("model_version")
+                    if current_analysis is not None
+                    else latest_model_version
+                ),
+                "scope": "message_level",
+                "source": (
+                    "current_message"
+                    if current_analysis is not None
+                    else "latest_stored_message"
+                    if latest_incident
+                    else "unavailable"
+                ),
             },
             "targeting": {
                 "value": targeting_score,
@@ -1296,16 +1684,34 @@ def child_risk_assessment(
                 "observed_evidence_count": len(targeting_signals),
                 "observed_incident_count": incidents_with_targeting_evidence,
                 "evidence": targeting_evidence,
+                "scope": (
+                    "current_message"
+                    if current_analysis is not None
+                    else "latest_stored_message"
+                    if latest_incident
+                    else "unavailable"
+                ),
             },
             "severity": {
                 "value": severity_score,
                 "status": severity_status,
                 "observed_evidence_count": len(severity_signals),
                 "evidence": severity_evidence,
+                "scope": (
+                    "current_message"
+                    if current_analysis is not None
+                    else "latest_stored_message"
+                    if latest_incident
+                    else "unavailable"
+                ),
             },
             "multimodal": {
-                "value": None,
-                "status": "text_available_optional_media_not_provided",
+                "value": multimodal_score,
+                "status": (
+                    "computed_from_available_text"
+                    if multimodal_score is not None
+                    else "text_evidence_unavailable"
+                ),
                 **{
                     f"{modality}_status": status
                     for modality, status in {
@@ -1333,7 +1739,7 @@ def child_risk_assessment(
             "historical": {
                 **historical_component,
                 "observed_incident_count": len(records),
-                "risk_score_status": historical_component["status"],
+                "risk_score_status": "research_derived",
             },
         },
         "explanation": {

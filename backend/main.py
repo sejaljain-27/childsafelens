@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import time
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -479,12 +480,23 @@ def _persist_risk_snapshot(
             "riskAssessmentTimestamp": snapshot_time,
             "riskFusionOutput": {
                 "status": risk_fusion.get("status"),
-                "value": risk_fusion.get("score"),
-                "modelName": "XGBoost child-risk fusion",
+                "value": (
+                    risk_fusion.get("score")
+                    if assessment.get("risk_method") == "trained_risk_fusion_model"
+                    else assessment.get("crs", 0) / 100
+                    if assessment.get("crs") is not None
+                    else None
+                ),
+                "modelName": (
+                    "XGBoost child-risk fusion"
+                    if assessment.get("risk_method") == "trained_risk_fusion_model"
+                    else "Research-derived deterministic risk fusion"
+                ),
                 "modelVersion": risk_fusion.get("model_version"),
+                "method": assessment.get("risk_method"),
                 "timestamp": snapshot_time,
                 "modality": "contextual_risk",
-                "processingStatus": risk_fusion.get("status"),
+                "processingStatus": assessment.get("status"),
             },
             "shapExplanation": {
                 **explanation,
@@ -494,7 +506,11 @@ def _persist_risk_snapshot(
             },
             "modelVersions": {
                 **snapshot.get("modelVersions", {}),
-                "risk_fusion": risk_fusion.get("model_version"),
+                **(
+                    {"risk_fusion": risk_fusion.get("model_version")}
+                    if assessment.get("risk_method") == "trained_risk_fusion_model"
+                    else {}
+                ),
             },
         }
     )
@@ -908,6 +924,7 @@ def analyze_video(req: MediaAnalysisRequest):
 def get_child_risk(
     child_id: str,
     parentEmail: str | None = None,
+    currentAnalysis: str | None = None,
     authenticated_email: str = Depends(require_parent),
 ):
     owner_email = _assert_parent_scope(parentEmail, authenticated_email)
@@ -917,7 +934,68 @@ def get_child_risk(
         if incidents
         else _resolve_child_identity(owner_email, child_id=child_id)[0]
     )
-    assessment = child_risk_assessment(incidents, canonical_child_id)
+    current_message = None
+    if currentAnalysis is not None:
+        try:
+            parsed_analysis = json.loads(currentAnalysis)
+        except json.JSONDecodeError as error:
+            raise HTTPException(
+                status_code=422,
+                detail="Current message analysis must be valid JSON.",
+            ) from error
+        if not isinstance(parsed_analysis, dict):
+            raise HTTPException(
+                status_code=422,
+                detail="Current message analysis must be an object.",
+            )
+        if (
+            parsed_analysis.get("model_version") != CASCADE_MODEL_VERSION
+            or parsed_analysis.get("text_status") != "available"
+            or parsed_analysis.get("classification") not in {"Bullying", "Clean"}
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Current message analysis must contain a completed cascade text prediction.",
+            )
+        probability = parsed_analysis.get("probability")
+        if probability is not None and (
+            isinstance(probability, bool)
+            or not isinstance(probability, (int, float))
+            or not math.isfinite(probability)
+            or not 0 <= probability <= 1
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Current message probability must be between 0 and 1.",
+            )
+        for score_name in ("targeting_score", "severity_score"):
+            score = parsed_analysis.get(score_name)
+            if score is not None and (
+                isinstance(score, bool)
+                or not isinstance(score, (int, float))
+                or not math.isfinite(score)
+                or not 0 <= score <= 1
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Current message {score_name} must be between 0 and 1.",
+                )
+        for evidence_name in ("targeting_evidence", "severity_evidence"):
+            evidence = parsed_analysis.get(evidence_name, [])
+            if not isinstance(evidence, list) or not all(
+                isinstance(value, str) for value in evidence
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Current message {evidence_name} must be a string array.",
+                )
+        current_message = parsed_analysis
+
+    assessment = child_risk_assessment(
+        incidents,
+        canonical_child_id,
+        current_message=current_message,
+    )
     _persist_risk_snapshot(incidents, assessment)
     return assessment
 

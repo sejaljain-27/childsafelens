@@ -257,6 +257,9 @@ export interface CurrentMessageAnalysis {
   text_status: 'available' | 'not_provided';
   targeting_evidence: string[];
   severity_evidence: string[];
+  targeting_score?: number | null;
+  severity_score?: number | null;
+  targeting_signals?: Record<string, boolean | null>;
   analyzed_at: string | null;
 }
 
@@ -267,8 +270,12 @@ interface TextPredictionResponse {
   model_version: string;
   model_status: string;
   text_evidence_available: boolean;
-  targeting_evidence: { supporting_evidence?: string[] };
-  severity_evidence: { indicators?: string[] };
+  targeting_evidence: {
+    supporting_evidence?: string[];
+    score?: number | null;
+    indicators?: Record<string, boolean | null>;
+  };
+  severity_evidence: { indicators?: string[]; score?: number | null };
   timestamp: string | null;
 }
 
@@ -289,6 +296,20 @@ const isCurrentMessageAnalysis = (value: unknown): value is CurrentMessageAnalys
     && analysis.targeting_evidence.every(item => typeof item === 'string')
     && Array.isArray(analysis.severity_evidence)
     && analysis.severity_evidence.every(item => typeof item === 'string')
+    && (analysis.targeting_score === undefined
+      || analysis.targeting_score === null
+      || (typeof analysis.targeting_score === 'number'
+        && Number.isFinite(analysis.targeting_score)))
+    && (analysis.severity_score === undefined
+      || analysis.severity_score === null
+      || (typeof analysis.severity_score === 'number'
+        && Number.isFinite(analysis.severity_score)))
+    && (analysis.targeting_signals === undefined
+      || (typeof analysis.targeting_signals === 'object'
+        && analysis.targeting_signals !== null
+        && Object.values(analysis.targeting_signals).every(
+          value => value === null || typeof value === 'boolean',
+        )))
     && (analysis.analyzed_at === null || typeof analysis.analyzed_at === 'string');
 };
 
@@ -362,6 +383,9 @@ export const analyzeCurrentMessage = async (
     text_status: text.trim() && result.text_evidence_available ? 'available' : 'not_provided',
     targeting_evidence: result.targeting_evidence?.supporting_evidence ?? [],
     severity_evidence: result.severity_evidence?.indicators ?? [],
+    targeting_score: result.targeting_evidence?.score ?? null,
+    severity_score: result.severity_evidence?.score ?? null,
+    targeting_signals: result.targeting_evidence?.indicators ?? {},
     analyzed_at: result.timestamp,
   };
 };
@@ -383,6 +407,26 @@ export interface ResearchRisk {
   risk_state: string;
   status: string;
   message: string;
+  risk_method?: string;
+  risk_disclaimer?: string;
+  deterministic_contributions?: {
+    feature: string;
+    value: number;
+    configured_weight: number;
+    renormalized_weight: number | null;
+    contribution: number;
+    contribution_percent: number;
+    weighted_crs_points: number | null;
+  }[];
+  current_message?: {
+    classification: string;
+    category: string | null;
+    classifier_probability: number | null;
+    model_version: string;
+    text_status: string;
+    targeting_evidence: string[];
+    severity_evidence: string[];
+  } | null;
   risk_fusion?: {
     explanation?: {
       status: string;
@@ -466,6 +510,11 @@ export interface ResearchComponent {
   image_status?: string;
   audio_status?: string;
   video_status?: string;
+  source?: string;
+  frequency?: number | null;
+  recency?: number | null;
+  reason?: string;
+  formula?: string;
 }
 
 interface Capability {
@@ -487,6 +536,11 @@ export interface ResearchCapabilities {
   classification_disclaimer: string | null;
   category_classifier: Capability;
   risk_fusion: Capability;
+  deterministic_risk_fusion?: Capability & {
+    method?: string;
+    validated?: boolean;
+    weights?: Record<string, number>;
+  };
   explainability: Capability;
   multimodal: {
     audio: Capability;
@@ -498,6 +552,10 @@ export interface ResearchCapabilities {
     escalation_alpha_configured: boolean;
     historical_retention_configured: boolean;
     social_graph_weights_configured: boolean;
+    deterministic_fusion_weights_configured?: boolean;
+    severity_weights?: Record<string, number>;
+    fusion_weights?: Record<string, number>;
+    risk_thresholds?: Record<string, number>;
   };
   message: string;
 }
@@ -543,6 +601,7 @@ export const fetchResearchCapabilities = async (): Promise<ResearchCapabilities>
     classification_disclaimer: null,
     category_classifier: { status: 'unavailable' },
     risk_fusion: { status: 'unavailable' },
+    deterministic_risk_fusion: { status: 'unavailable' },
     explainability: { status: 'unavailable' },
     multimodal: {
       audio: { status: 'unavailable' },
@@ -572,6 +631,7 @@ export const fetchResearchCapabilities = async (): Promise<ResearchCapabilities>
 export const fetchResearchRisk = async (
   parentEmail: string,
   childId: string,
+  currentAnalysis?: CurrentMessageAnalysis | null,
 ): Promise<ResearchRisk> => {
   if (!childId.trim()) {
     return unavailableResearchRisk(
@@ -580,6 +640,12 @@ export const fetchResearchRisk = async (
     );
   }
   const params = new URLSearchParams({ parentEmail });
+  if (
+    currentAnalysis?.text_status === 'available'
+    && currentAnalysis.model_version === 'cyberbullying-cascade-v4'
+  ) {
+    params.set('currentAnalysis', JSON.stringify(currentAnalysis));
+  }
   try {
     const response = await authenticatedFetch(
       `${API_BASE_URL}/children/${encodeURIComponent(childId)}/risk?${params.toString()}`,
