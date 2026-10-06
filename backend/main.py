@@ -24,9 +24,9 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -46,6 +46,7 @@ from research_risk import (
     current_incident_score,
     severity_evidence,
     social_graph,
+    stored_classifier_probability,
     targeting_evidence,
 )
 
@@ -86,6 +87,10 @@ RiskLevel = Literal["low_risk", "medium_risk", "high_risk"]
 
 class PredictRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000)
+    child_name: str | None = Field(default=None, max_length=120)
+    child_username: str | None = Field(default=None, max_length=120)
+    reply_to_child: bool | None = None
+    personal_reference: bool | None = None
 
 
 class ParentAuthRequest(BaseModel):
@@ -94,14 +99,23 @@ class ParentAuthRequest(BaseModel):
     fullName: str = Field(default="", max_length=120)
 
 
+DEFAULT_DEV_AUTH_SECRET = "childsafelens-local-dev-auth-secret-32bytes"
+
+
 def _auth_secret() -> bytes:
-    secret = os.environ.get("CHILDSAFELENS_AUTH_SECRET", "")
-    if len(secret.encode("utf-8")) < 32:
-        raise HTTPException(
-            status_code=503,
-            detail="Authentication is not configured on this server.",
+    secret = os.environ.get("CHILDSAFELENS_AUTH_SECRET")
+    if secret and len(secret.encode("utf-8")) >= 32:
+        return secret.encode("utf-8")
+    if secret is None or len(secret.encode("utf-8")) < 32:
+        _logger.warning(
+            "CHILDSAFELENS_AUTH_SECRET missing or too short; using local development fallback. "
+            "Set CHILDSAFELENS_AUTH_SECRET in production to a secure secret."
         )
-    return secret.encode("utf-8")
+        return DEFAULT_DEV_AUTH_SECRET.encode("utf-8")
+    raise HTTPException(
+        status_code=503,
+        detail="Authentication is not configured on this server.",
+    )
 
 
 def _base64url(data: bytes) -> str:
@@ -200,6 +214,9 @@ class PredictResponse(BaseModel):
     incident_created: bool = False
     classification_status: str = "MODEL_LOADED"
     risk_score: float
+    text_evidence_available: bool = True
+    targeting_evidence: dict[str, Any] = Field(default_factory=dict)
+    severity_evidence: dict[str, Any] = Field(default_factory=dict)
     is_risky: bool
     label: RiskLevel
     stage1_label: Literal["Bullying", "Clean"] | None
@@ -233,7 +250,7 @@ class LogEventRequest(BaseModel):
 class IncidentCreate(BaseModel):
     incidentId: str
     parentEmail: str = "default_parent@test.com"
-    childId: str = "default_child"
+    childId: str = Field(..., min_length=1)
     childName: str = "Aarav"
     type: str
     messageSnippet: str
@@ -372,7 +389,21 @@ def predict(req: PredictRequest):
         gate_threshold=result.get("gate_threshold"),
         categories=result.get("categories", []),
         incident_created=False,
-        risk_score=round(result["risk_score"], 4),
+        risk_score=result["risk_score"],
+        text_evidence_available=bool(req.text.strip()),
+        targeting_evidence=targeting_evidence(
+            req.text,
+            child_name=req.child_name,
+            child_username=req.child_username,
+            reply_to_child=req.reply_to_child,
+            personal_reference=req.personal_reference,
+            weights=configured_weights("targeting", TARGETING_FEATURES),
+        ),
+        severity_evidence=severity_evidence(
+            [],
+            weights=configured_weights("severity", SEVERITY_CATEGORIES),
+            text=req.text,
+        ),
         is_risky=result["is_risky"],
         label=result["label"],
         stage1_label=result["stage1_label"],
@@ -473,16 +504,20 @@ def _persist_risk_snapshot(
 def get_events(
     parentEmail: str | None = None,
     childName: str | None = None,
+    childId: str | None = None,
     authenticated_email: str = Depends(require_parent),
 ):
     owner_email = _assert_parent_scope(parentEmail, authenticated_email)
-    incidents = [
-        incident
-        for incident in _incidents.values()
-        if account_store.normalize_email(incident.get("parentEmail", "")) == owner_email
-    ]
-    if childName:
-        incidents = [i for i in incidents if i.get("childName", "").lower() == childName.lower()]
+    if childName and not childId:
+        raise HTTPException(
+            status_code=422,
+            detail="A selected childId is required for child-scoped event queries.",
+        )
+    incidents = (
+        _child_incidents(owner_email, child_id=childId)
+        if childId
+        else _parent_incidents(owner_email)
+    )
 
     high = sum(1 for i in incidents if str(i.get("riskLevel", "")).upper() in ["HIGH", "CRITICAL", "HIGH_RISK"])
     medium = sum(1 for i in incidents if str(i.get("riskLevel", "")).upper() in ["MEDIUM", "MEDIUM_RISK"])
@@ -492,22 +527,12 @@ def get_events(
 
 @app.get("/analytics")
 def get_analytics(
+    childId: str = Query(..., min_length=1),
     parentEmail: str | None = None,
-    childName: str | None = None,
     authenticated_email: str = Depends(require_parent),
 ):
     owner_email = _assert_parent_scope(parentEmail, authenticated_email)
-    incidents = [
-        incident
-        for incident in _incidents.values()
-        if account_store.normalize_email(incident.get("parentEmail", "")) == owner_email
-    ]
-    if childName:
-        incidents = [
-            incident
-            for incident in incidents
-            if incident.get("childName", "").lower() == childName.lower()
-        ]
+    incidents = _child_incidents(owner_email, child_id=childId)
     return analytics_summary(incidents)
 
 
@@ -550,7 +575,14 @@ def create_incident(
             detail="Message classified as Clean; incident was not created.",
         )
 
-    child_name = inc.childName if "childName" in inc.model_fields_set else None
+    canonical_child_id, canonical_child_name, _ = _resolve_child_identity(
+        owner_email,
+        child_id=inc.childId,
+        child_name=inc.childName,
+    )
+    child_name = canonical_child_name or (
+        inc.childName if "childName" in inc.model_fields_set else None
+    )
     targeting = targeting_evidence(
         classification_text,
         child_name=child_name,
@@ -618,10 +650,12 @@ def create_incident(
     incident_data = {
         "incidentId": inc.incidentId,
         "parentEmail": owner_email,
-        "childId": inc.childId,
-        "childName": inc.childName,
+        "childId": canonical_child_id or inc.childId,
+        "childName": canonical_child_name or inc.childName,
+        "classification": "CYBERBULLYING",
         "type": inc.type,
         "messageSnippet": inc.messageSnippet[:280],
+        "textEvidenceAvailable": bool(classification_text.strip()),
         "riskScore": prediction["risk_score"],
         "riskLevel": prediction["label"],
         "category": prediction.get("category"),
@@ -712,39 +746,121 @@ def create_incident(
 def get_incidents(
     parentEmail: str | None = None,
     childName: str | None = None,
+    childId: str | None = None,
     authenticated_email: str = Depends(require_parent),
 ):
     owner_email = _assert_parent_scope(parentEmail, authenticated_email)
-    results = [
-        incident
-        for incident in _incidents.values()
-        if account_store.normalize_email(incident.get("parentEmail", "")) == owner_email
-    ]
-    if childName:
-        results = [i for i in results if i.get("childName", "").strip().lower() == childName.strip().lower()]
-    return results
+    if childName and not childId:
+        raise HTTPException(
+            status_code=422,
+            detail="A selected childId is required for child-scoped incident queries.",
+        )
+    if childId:
+        return _child_incidents(owner_email, child_id=childId)
+    return _parent_incidents(owner_email)
+
+
+def _parent_incidents(parent_email: str) -> list[dict]:
+    normalized_parent = account_store.normalize_email(parent_email)
+    records = {
+        str(incident.get("incidentId")): incident
+        for incident in account_store.list_incidents(parent_email=normalized_parent)
+        if incident.get("incidentId") and _is_harmful_incident(incident)
+    }
+    records.update(
+        {
+            str(incident.get("incidentId") or cache_id): incident
+            for cache_id, incident in _incidents.items()
+            if account_store.normalize_email(incident.get("parentEmail", ""))
+            == normalized_parent
+            and _is_harmful_incident(incident)
+        }
+    )
+    return list(records.values())
+
+
+def _incident_classification(incident: dict) -> str | None:
+    classification = incident.get("classification")
+    if classification is None:
+        classification = incident.get("model_classification")
+    if classification is None:
+        classifier_output = incident.get("classifierOutput", {})
+        if isinstance(classifier_output, dict):
+            output = classifier_output.get("output", {})
+            if isinstance(output, dict):
+                classification = output.get("label")
+    return str(classification) if classification is not None else None
+
+
+def _incident_evidence(incident: dict, field: str, key: str) -> list:
+    evidence = incident.get(field)
+    if not isinstance(evidence, dict):
+        return []
+    items = evidence.get(key)
+    return items if isinstance(items, list) else []
+
+
+def _is_harmful_incident(incident: dict) -> bool:
+    classification = _incident_classification(incident)
+    if classification is None:
+        return False
+    return classification.strip().casefold() in {
+        "bullying",
+        "cyberbullying",
+    }
+
+
+def _resolve_child_identity(
+    parent_email: str,
+    child_id: str | None = None,
+    child_name: str | None = None,
+) -> tuple[str | None, str | None, set[str]]:
+    normalized_id = child_id.strip() if child_id else None
+    normalized_name = child_name.strip() if child_name else None
+    profiles = account_store.list_child_profiles(parent_email)
+    profile = next(
+        (item for item in profiles if normalized_id == item["child_id"]),
+        None,
+    )
+    if (
+        profile is None
+        and normalized_id is not None
+        and normalized_name is not None
+        and normalized_id.casefold() == normalized_name.casefold()
+    ):
+        profile = next(
+            (
+                item
+                for item in profiles
+                if normalized_name.casefold() == item["child_name"].casefold()
+            ),
+            None,
+        )
+    if profile is not None:
+        canonical_id = profile["child_id"]
+        canonical_name = profile["child_name"]
+        aliases = {canonical_id, canonical_name}
+    else:
+        canonical_id = normalized_id or normalized_name
+        canonical_name = None
+        aliases = {normalized_id} if normalized_id else set()
+    return canonical_id, canonical_name, aliases
 
 
 def _child_incidents(
     parent_email: str,
-    child_id: str | None = None,
-    child_name: str | None = None,
+    child_id: str,
 ) -> list[dict]:
-    normalized_parent = account_store.normalize_email(parent_email)
-    results = [
-        incident
-        for incident in _incidents.values()
-        if account_store.normalize_email(incident.get("parentEmail", ""))
-        == normalized_parent
-    ]
-    if child_id:
-        results = [incident for incident in results if incident.get("childId") == child_id]
-    if child_name:
-        results = [
-            incident
-            for incident in results
-            if incident.get("childName", "").lower() == child_name.lower()
-        ]
+    canonical_id, _, aliases = _resolve_child_identity(parent_email, child_id)
+    if canonical_id is None:
+        return []
+    results = []
+    for incident in _parent_incidents(parent_email):
+        stored_id = str(incident.get("childId", "")).strip()
+        if stored_id in aliases:
+            normalized = dict(incident)
+            normalized["childId"] = canonical_id
+            results.append(normalized)
     return results
 
 
@@ -787,20 +903,6 @@ def analyze_video(req: MediaAnalysisRequest):
     _media_analysis_unavailable("video", req.media_reference)
 
 
-@app.get("/children/risk")
-def get_child_risk_by_name(
-    parentEmail: str | None = None,
-    childName: str = "",
-    authenticated_email: str = Depends(require_parent),
-):
-    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
-    incidents = _child_incidents(owner_email, child_name=childName)
-    child_id = incidents[0]["childId"] if incidents else None
-    assessment = child_risk_assessment(incidents, child_id)
-    _persist_risk_snapshot(incidents, assessment)
-    return assessment
-
-
 @app.get("/children/{child_id}/risk")
 def get_child_risk(
     child_id: str,
@@ -809,7 +911,12 @@ def get_child_risk(
 ):
     owner_email = _assert_parent_scope(parentEmail, authenticated_email)
     incidents = _child_incidents(owner_email, child_id=child_id)
-    assessment = child_risk_assessment(incidents, child_id)
+    canonical_child_id = (
+        incidents[0]["childId"]
+        if incidents
+        else _resolve_child_identity(owner_email, child_id=child_id)[0]
+    )
+    assessment = child_risk_assessment(incidents, canonical_child_id)
     _persist_risk_snapshot(incidents, assessment)
     return assessment
 
@@ -822,6 +929,11 @@ def get_child_timeline(
 ):
     owner_email = _assert_parent_scope(parentEmail, authenticated_email)
     incidents = _child_incidents(owner_email, child_id=child_id)
+    canonical_child_id = (
+        incidents[0]["childId"]
+        if incidents
+        else _resolve_child_identity(owner_email, child_id=child_id)[0]
+    )
     ordered_incidents = sorted(
         incidents,
         key=lambda incident: (
@@ -841,7 +953,7 @@ def get_child_timeline(
             point_in_time = None
         assessment = child_risk_assessment(
             ordered_incidents[: index + 1],
-            child_id,
+            canonical_child_id,
             point_in_time,
         )
         _persist_risk_snapshot(
@@ -852,14 +964,24 @@ def get_child_timeline(
         timeline.append(
             {
                 "incident_id": incident["incidentId"],
+                "child_id": canonical_child_id,
                 "timestamp": timestamp,
+                "classification": _incident_classification(incident),
+                "category": incident.get("category"),
+                "classifier_probability": stored_classifier_probability(incident),
+                "severity_evidence": _incident_evidence(
+                    incident, "severity_evidence", "indicators"
+                ),
+                "targeting_evidence": _incident_evidence(
+                    incident, "targeting_evidence", "supporting_evidence"
+                ),
                 "crs": assessment["crs"],
                 "risk_state": assessment["risk_state"],
                 "status": assessment["status"],
             }
         )
     return {
-        "child_id": child_id,
+        "child_id": canonical_child_id,
         "status": "available" if incidents else "no_history",
         "storage": "sqlite",
         "timeline": timeline,
@@ -874,11 +996,16 @@ def get_child_social_graph(
 ):
     owner_email = _assert_parent_scope(parentEmail, authenticated_email)
     incidents = _child_incidents(owner_email, child_id=child_id)
+    canonical_child_id = (
+        incidents[0]["childId"]
+        if incidents
+        else _resolve_child_identity(owner_email, child_id=child_id)[0]
+    )
     return {
-        "child_id": child_id,
+        "child_id": canonical_child_id,
         **social_graph(
             incidents,
-            child_id,
+            canonical_child_id,
             weights=configured_weights("graph", SOCIAL_GRAPH_FEATURES),
         ),
     }

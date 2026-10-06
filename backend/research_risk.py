@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping
 
 import networkx as nx
 
+from classifier_service import CASCADE_MODEL_VERSION
 from model import classifier_status
 from risk_fusion import risk_fusion_service
 
@@ -217,7 +218,13 @@ def targeting_evidence(
             for name, value in available.items()
         )
     return {
-        "status": "available" if direct_targeting_evidence else "insufficient_evidence",
+        "status": (
+            "computed"
+            if score is not None
+            else "observed"
+            if supporting_evidence
+            else "insufficient_evidence"
+        ),
         "analysis_status": "completed",
         "indicators": indicators,
         "available_signals": list(available),
@@ -406,14 +413,27 @@ def _temporal_component(
             "observed_incident_count": 0,
             "lambda_per_second": None,
         }
+    dated_incident_count = sum(
+        _timestamp_seconds(incident.get("timestamp")) is not None
+        for incident in incidents
+    )
+    if not dated_incident_count:
+        return {
+            "value": None,
+            "status": "insufficient_dated_history",
+            "observed_incident_count": len(incidents),
+            "dated_incident_count": 0,
+            "lambda_per_second": None,
+        }
     decay = _configured_parameter(
         "CHILDSAFELENS_TEMPORAL_DECAY_PER_SECOND", minimum=0
     )
     if decay is None:
         return {
             "value": None,
-            "status": "decay_parameter_not_configured",
+            "status": "observed_descriptive",
             "observed_incident_count": len(incidents),
+            "dated_incident_count": dated_incident_count,
             "lambda_per_second": None,
         }
     if decay == 0:
@@ -816,7 +836,7 @@ def capability_status() -> dict[str, Any]:
             "status": (
                 "available"
                 if classifier.get("status") == "real" and classifier.get("categories")
-                else "unavailable"
+                else "not_configured"
             ),
             "artifact_present": bool(
                 classifier.get("artifact_present") and classifier.get("categories")
@@ -932,6 +952,29 @@ def _observed_state_component(
     }
 
 
+def stored_classifier_probability(incident: Mapping[str, Any]) -> float | None:
+    classifier_output = incident.get("classifierOutput")
+    if not isinstance(classifier_output, Mapping):
+        return None
+    prediction = classifier_output.get("output")
+    if not isinstance(prediction, Mapping):
+        return None
+    model_version = incident.get("modelVersion") or classifier_output.get(
+        "modelVersion"
+    )
+    probability = prediction.get("probability")
+    if (
+        model_version != CASCADE_MODEL_VERSION
+        or prediction.get("label") != "Bullying"
+        or isinstance(probability, bool)
+        or not isinstance(probability, (int, float))
+        or not math.isfinite(probability)
+        or not 0 <= probability <= 1
+    ):
+        return None
+    return float(probability)
+
+
 def _research_state(
     records: list[Mapping[str, Any]],
     temporal: Mapping[str, Any],
@@ -959,7 +1002,13 @@ def _research_state(
     if not isinstance(multimodal, Mapping):
         multimodal = {}
 
-    classifier_value = latest.get("riskScore")
+    classifier_output = latest.get("classifierOutput", {})
+    if not isinstance(classifier_output, Mapping):
+        classifier_output = {}
+    model_version = latest.get("modelVersion") or classifier_output.get(
+        "modelVersion"
+    )
+    classifier_value = stored_classifier_probability(latest)
     if latest.get("model_status") == "dummy":
         classifier_value = None
         classifier_status = "dummy_development_simulation"
@@ -1041,12 +1090,88 @@ def child_risk_assessment(
         1 for incident in records
         if _incident_datetime(incident.get("timestamp")) is not None
     )
-    active_day_count = sum(
+    active_day_count_last_7_days = sum(
         1 for day in history["daily_incidents"] if day["count"] > 0
+    )
+    all_time_incidents_by_day = Counter(
+        occurred_at.date().isoformat()
+        for incident in records
+        if (occurred_at := _incident_datetime(incident.get("timestamp"))) is not None
+    )
+    active_day_count = len(all_time_incidents_by_day)
+    latest_incident = max(
+        records,
+        key=lambda incident: (
+            timestamp
+            if (timestamp := _timestamp_seconds(incident.get("timestamp"))) is not None
+            else float("-inf")
+        ),
+        default={},
+    )
+    latest_targeting = latest_incident.get("targeting_evidence", {})
+    if not isinstance(latest_targeting, Mapping):
+        latest_targeting = {}
+    latest_severity = latest_incident.get("severity_evidence", {})
+    if not isinstance(latest_severity, Mapping):
+        latest_severity = {}
+    targeting_score = latest_incident.get(
+        "targeting_score", latest_targeting.get("score")
+    )
+    severity_score = latest_severity.get("score")
+    targeting_evidence = latest_targeting.get("supporting_evidence", [])
+    severity_evidence = latest_severity.get("indicators", [])
+    latest_classifier_output = latest_incident.get("classifierOutput", {})
+    if not isinstance(latest_classifier_output, Mapping):
+        latest_classifier_output = {}
+    latest_classifier_result = latest_classifier_output.get("output", {})
+    if not isinstance(latest_classifier_result, Mapping):
+        latest_classifier_result = {}
+    latest_model_version = latest_incident.get("modelVersion") or (
+        latest_classifier_output.get("modelVersion")
+    )
+    classifier_probability = stored_classifier_probability(latest_incident)
+    text_available = (
+        bool(latest_incident.get("textEvidenceAvailable"))
+        if "textEvidenceAvailable" in latest_incident
+        else bool(
+            isinstance(latest_incident.get("messageSnippet"), str)
+            and latest_incident["messageSnippet"].strip()
+        )
+    )
+    classifier_is_dummy = (
+        "dummy_development_simulation"
+        if latest_incident.get("model_status") == "dummy"
+        or (not latest_incident and capabilities["classifier"].get("status") == "dummy")
+        else None
+    )
+    classifier_component_status = classifier_is_dummy or (
+        "computed"
+        if isinstance(classifier_probability, (int, float))
+        else "not_available"
+    )
+    targeting_status = (
+        "computed"
+        if targeting_score is not None
+        else "observed_uncalibrated"
+        if targeting_signals
+        else "insufficient_evidence"
+    )
+    severity_status = (
+        "computed"
+        if severity_score is not None
+        else "observed_uncalibrated"
+        if severity_signals
+        else "insufficient_evidence"
     )
     temporal_component = _temporal_component(records, current_time)
     escalation_component = _escalation_component(records)
-    historical_component = _historical_component(records, temporal_component)
+    historical_feature = _historical_component(records, temporal_component)
+    historical_component = {
+        "value": None,
+        "status": "child_risk_model_not_configured",
+        "observed_incident_count": len(records),
+        "reason": "No trained child-risk model is configured.",
+    }
     graph = social_graph(
         records,
         child_id,
@@ -1074,7 +1199,7 @@ def child_risk_assessment(
         "temporal_risk": temporal_component.get("value"),
         "escalation": escalation_component.get("value"),
         "social_graph": graph.get("graph_score"),
-        "historical": historical_component.get("value"),
+        "historical": historical_feature.get("value"),
     }
     risk_fusion_result = risk_fusion_service.predict(risk_fusion_features)
     risk_fusion_explanation = (
@@ -1097,18 +1222,40 @@ def child_risk_assessment(
         "incident_count": len(records),
         "history_metrics": {
             "dated_incident_count": dated_incident_count,
-            "active_days_last_7_days": active_day_count,
+            "active_days": active_day_count,
+            "total_incidents": len(records),
+            "average_incidents_per_active_day": (
+                len(records) / active_day_count if active_day_count else None
+            ),
+            "active_days_last_7_days": active_day_count_last_7_days,
             "incidents_last_7_days": sum(
                 day["count"] for day in history["daily_incidents"]
             ),
-            "average_incidents_per_active_day": (
-                sum(day["count"] for day in history["daily_incidents"])
-                / active_day_count
-                if active_day_count
-                else None
-            ),
             "repeated_senders": history["repeated_senders"],
             "sender_data_available": history["sender_data_available"],
+        },
+        "latest_incident": {
+            "incident_id": latest_incident.get("incidentId"),
+            "timestamp": latest_incident.get("timestamp"),
+            "classification": latest_incident.get(
+                "classification", latest_classifier_result.get("label")
+            ),
+            "category": latest_incident.get("category"),
+            "classifier_probability": classifier_probability,
+            "model_version": latest_model_version,
+            "targeting_evidence": targeting_evidence,
+            "severity_evidence": severity_evidence,
+        } if latest_incident else None,
+        "text_evidence": {
+            "status": "available" if text_available else "not_provided",
+            "targeting": targeting_evidence,
+            "severity": severity_evidence,
+        },
+        "multimodal_evidence": {
+            "text": "available" if text_available else "not_provided",
+            "image": "not_provided",
+            "audio": "not_provided",
+            "video": "not_provided",
         },
         "crs": crs,
         "risk_state": risk_state(crs),
@@ -1120,7 +1267,6 @@ def child_risk_assessment(
         "risk_fusion": {
             **risk_fusion_result,
             "explanation": risk_fusion_explanation,
-            "features": risk_fusion_features,
         },
         "research_state": research_state,
         "targeting_evidence_count": len(targeting_signals),
@@ -1132,28 +1278,52 @@ def child_risk_assessment(
         "social_graph": graph,
         "components": {
             "classifier_probability": {
-                **research_state["components"]["P"],
+                "value": classifier_probability,
+                "status": (
+                    "computed"
+                    if classifier_probability is not None
+                    else "not_available"
+                    if latest_incident
+                    else "no_current_message_prediction"
+                ),
+                "model_version": latest_model_version,
+                "scope": "message_level",
+                "status": classifier_component_status,
             },
             "targeting": {
-                "value": None,
-                "status": (
-                    "evidence_observed_uncalibrated"
-                    if targeting_signals
-                    else "insufficient_context"
-                ),
+                "value": targeting_score,
+                "status": targeting_status,
                 "observed_evidence_count": len(targeting_signals),
                 "observed_incident_count": incidents_with_targeting_evidence,
+                "evidence": targeting_evidence,
             },
             "severity": {
-                "value": None,
-                "status": "uncalibrated_weights",
+                "value": severity_score,
+                "status": severity_status,
                 "observed_evidence_count": len(severity_signals),
+                "evidence": severity_evidence,
             },
-            "multimodal": {"value": None, "status": "provider_not_configured"},
+            "multimodal": {
+                "value": None,
+                "status": "text_available_optional_media_not_provided",
+                **{
+                    f"{modality}_status": status
+                    for modality, status in {
+                        "text": "available" if text_available else "not_provided",
+                        "image": "not_provided",
+                        "audio": "not_provided",
+                        "video": "not_provided",
+                    }.items()
+                },
+            },
             "temporal": {
                 **temporal_component,
                 "dated_incident_count": dated_incident_count,
-                "active_day_count_last_7_days": active_day_count,
+                "active_day_count": active_day_count,
+                "active_day_count_last_7_days": active_day_count_last_7_days,
+                "average_incidents_per_active_day": (
+                    len(records) / active_day_count if active_day_count else None
+                ),
             },
             "escalation": escalation_component,
             "social_graph": {

@@ -21,12 +21,14 @@ import {
   fetchDashboardStats,
   fetchIncidentExplanation,
   fetchResearchRisk,
+  getCurrentMessageAnalysis,
   clearParentSession,
   hasParentSession,
   ParentSessionExpiredError,
   fetchSocialGraphRisk,
   submitDecision,
   type ChildRiskTimeline,
+  type CurrentMessageAnalysis,
   type IncidentExplanation,
   type IncidentType,
   type DashboardStats,
@@ -35,7 +37,7 @@ import {
 } from '../services/alertsService';
 
 const riskComponentLabels = [
-  ['classifier_probability', 'Cyberbullying'],
+  ['classifier_probability', 'Cyberbullying classifier probability'],
   ['targeting', 'Targeting'],
   ['severity', 'Severity'],
   ['multimodal', 'Multimodal'],
@@ -45,10 +47,19 @@ const riskComponentLabels = [
   ['historical', 'Historical'],
 ] as const;
 
-const displayComponentValue = (value: number | null | undefined, status?: string) => {
+const displayComponentValue = (
+  value: number | null | undefined,
+  status?: string,
+  evidenceCount?: number,
+) => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value.toFixed(3);
   }
+  if (status === 'observed_uncalibrated' && evidenceCount) {
+    return `Observed (${evidenceCount})`;
+  }
+  if (status === 'observed_descriptive') return 'Descriptive only';
+  if (status === 'text_available_optional_media_not_provided') return 'Text available';
   if (status?.includes('insufficient') || status?.includes('uncalibrated')) {
     return 'Insufficient evidence';
   }
@@ -71,16 +82,16 @@ const DashboardScreen: React.FC = () => {
   const [parentEmail] = useState<string>(getStoredEmail() || '');
   const [availableChildren, setAvailableChildren] = useState<string[]>([]);
   const [selectedChild, setSelectedChild] = useState<string>('');
+  const [selectedChildId, setSelectedChildId] = useState<string>('');
   const [stats, setStats] = useState<DashboardStats>({
     total_events: 0,
-    high_risk_count: 0,
-    medium_risk_count: 0,
-    low_risk_count: 0,
+    classifier_flagged_count: 0,
     pending_count: 0,
   });
   const [outgoingIncidents, setOutgoingIncidents] = useState<IncidentType[]>([]);
   const [incomingIncidents, setIncomingIncidents] = useState<IncidentType[]>([]);
   const [researchRisk, setResearchRisk] = useState<ResearchRisk | null>(null);
+  const [currentMessageAnalysis, setCurrentMessageAnalysis] = useState<CurrentMessageAnalysis | null>(null);
   const [riskTimeline, setRiskTimeline] = useState<ChildRiskTimeline | null>(null);
   const [socialGraph, setSocialGraph] = useState<SocialGraphRisk | null>(null);
   const [riskExplanation, setRiskExplanation] = useState<IncidentExplanation | null>(null);
@@ -98,14 +109,14 @@ const DashboardScreen: React.FC = () => {
       const currentChild = children.includes(selectedChild) ? selectedChild : children[0];
       if (!currentChild) {
         setSelectedChild('');
+        setSelectedChildId('');
         setStats({
           total_events: 0,
-          high_risk_count: 0,
-          medium_risk_count: 0,
-          low_risk_count: 0,
+          classifier_flagged_count: 0,
           pending_count: 0,
         });
         setResearchRisk(null);
+        setCurrentMessageAnalysis(null);
         setRiskTimeline(null);
         setSocialGraph(null);
         setRiskExplanation(null);
@@ -115,12 +126,30 @@ const DashboardScreen: React.FC = () => {
       }
 
       if (currentChild !== selectedChild) setSelectedChild(currentChild);
-      const selectedProfile = profiles.find(profile => profile.childName === currentChild);
+      const selectedProfile = profiles.find(
+        profile => profile.childName.trim() === currentChild,
+      );
       const currentChildId = selectedProfile?.childId ?? '';
-      const [dashboardStats, allIncidents, childRisk, timeline, graph] = await Promise.all([
-        fetchDashboardStats(parentEmail, currentChild),
-        fetchAlerts(parentEmail, currentChild),
-        fetchResearchRisk(parentEmail, currentChild),
+      setSelectedChildId(currentChildId);
+      if (!currentChildId.trim()) {
+        setProfileError('The selected child profile has no ID. Child research data was not queried.');
+        setStats({
+          total_events: 0,
+          classifier_flagged_count: 0,
+          pending_count: 0,
+        });
+        setResearchRisk(null);
+        setCurrentMessageAnalysis(null);
+        setRiskTimeline(null);
+        setSocialGraph(null);
+        setRiskExplanation(null);
+        setOutgoingIncidents([]);
+        setIncomingIncidents([]);
+        return;
+      }
+      const [allIncidents, childRisk, timeline, graph] = await Promise.all([
+        fetchAlerts(parentEmail, currentChildId),
+        fetchResearchRisk(parentEmail, currentChildId),
         currentChildId
           ? fetchChildRiskTimeline(currentChildId, parentEmail)
           : Promise.resolve(null),
@@ -128,8 +157,9 @@ const DashboardScreen: React.FC = () => {
           ? fetchSocialGraphRisk(currentChildId, parentEmail)
           : Promise.resolve(null),
       ]);
-      setStats(dashboardStats);
+      setStats(await fetchDashboardStats(allIncidents));
       setResearchRisk(childRisk);
+      setCurrentMessageAnalysis(getCurrentMessageAnalysis(parentEmail, currentChildId));
       setRiskTimeline(timeline);
       setSocialGraph(graph);
       const latestIncident = allIncidents.reduce<IncidentType | null>(
@@ -159,14 +189,14 @@ const DashboardScreen: React.FC = () => {
       setProfileError(error instanceof Error ? error.message : 'Unable to load child profiles.');
       setAvailableChildren([]);
       setSelectedChild('');
+      setSelectedChildId('');
       setStats({
         total_events: 0,
-        high_risk_count: 0,
-        medium_risk_count: 0,
-        low_risk_count: 0,
+        classifier_flagged_count: 0,
         pending_count: 0,
       });
       setResearchRisk(null);
+      setCurrentMessageAnalysis(null);
       setRiskTimeline(null);
       setSocialGraph(null);
       setRiskExplanation(null);
@@ -192,6 +222,23 @@ const DashboardScreen: React.FC = () => {
   }, [router]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const updateCurrentAnalysis = () => {
+      setCurrentMessageAnalysis(
+        parentEmail && selectedChildId
+          ? getCurrentMessageAnalysis(parentEmail, selectedChildId)
+          : null,
+      );
+    };
+    updateCurrentAnalysis();
+    window.addEventListener('childsafelens-current-analysis-updated', updateCurrentAnalysis);
+    return () => window.removeEventListener(
+      'childsafelens-current-analysis-updated',
+      updateCurrentAnalysis,
+    );
+  }, [parentEmail, selectedChildId]);
+
+  useEffect(() => {
     if (!parentEmail) {
       router.replace('/');
       return;
@@ -205,8 +252,13 @@ const DashboardScreen: React.FC = () => {
   }, [loadData, parentEmail, router]);
 
   const handleDecision = async (incidentId: string, decision: 'ALLOW' | 'BLOCK' | 'EDIT') => {
-    await submitDecision(incidentId, decision);
-    loadData();
+    try {
+      await submitDecision(incidentId, decision);
+      await loadData();
+    } catch (error) {
+      console.error('Failed to submit parent decision', error);
+      setProfileError(error instanceof Error ? error.message : 'Unable to submit parent decision.');
+    }
   };
 
   const handleLogout = () => {
@@ -274,22 +326,29 @@ const DashboardScreen: React.FC = () => {
                     </TouchableOpacity>
                   ))}
                 </View>
+                {!selectedChildId && profileError && (
+                  <View style={styles.emptyCard}>
+                    <Text style={styles.emptyText}>{profileError}</Text>
+                  </View>
+                )}
 
-                {/* Metric Cards (High & Critical Risk focus) */}
                 <View style={styles.metricsGrid}>
                   <View style={styles.metricCard}>
                     <Text style={[styles.metricNumber, { color: '#FF9800' }]}>{stats.pending_count}</Text>
-                    <Text style={[styles.metricLabel, { color: '#F57C00' }]}>Pending</Text>
+                    <Text style={[styles.metricLabel, { color: '#F57C00' }]}>Pending review</Text>
                   </View>
                   <View style={styles.metricCard}>
-                    <Text style={[styles.metricNumber, { color: '#E91E63' }]}>{stats.high_risk_count}</Text>
-                    <Text style={[styles.metricLabel, { color: '#C2185B' }]}>High Risk</Text>
+                    <Text style={[styles.metricNumber, { color: '#E91E63' }]}>{stats.classifier_flagged_count}</Text>
+                    <Text style={[styles.metricLabel, { color: '#C2185B' }]}>Message-level classifier flags</Text>
                   </View>
                   <View style={styles.metricCard}>
                     <Text style={[styles.metricNumber, { color: '#42A5F5' }]}>{stats.total_events}</Text>
-                    <Text style={[styles.metricLabel, { color: '#1976D2' }]}>Total</Text>
+                    <Text style={[styles.metricLabel, { color: '#1976D2' }]}>Harmful incidents</Text>
                   </View>
                 </View>
+                <Text style={styles.researchRiskNote}>
+                  Message-level classifier labels are not child risk or CRS.
+                </Text>
                 <View style={styles.researchRiskCard}>
                   <Text style={styles.researchRiskTitle}>Classification</Text>
                   <Text style={styles.researchRiskText}>
@@ -331,8 +390,53 @@ const DashboardScreen: React.FC = () => {
                       <View key={key} style={styles.researchRiskRow}>
                         <Text style={styles.researchRiskText}>{label}</Text>
                         <Text style={styles.researchRiskValueSmall}>
-                          {displayComponentValue(component?.value, component?.status)}
+                          {key === 'historical' && component?.observed_incident_count !== undefined
+                            ? `${component.observed_incident_count} observed`
+                            : key === 'temporal' && researchRisk?.history_metrics
+                            ? `${researchRisk.history_metrics.total_incidents ?? 0} observed incidents across ${researchRisk.history_metrics.active_days ?? 0} active days`
+                            : key === 'classifier_probability' && currentMessageAnalysis
+                              ? currentMessageAnalysis.probability === null
+                                ? 'Not available'
+                                : String(currentMessageAnalysis.probability)
+                            : displayComponentValue(
+                              component?.value,
+                              component?.status,
+                              component?.observed_evidence_count,
+                            )}
                         </Text>
+                        {key === 'classifier_probability' && (
+                          <Text style={styles.researchRiskNote}>
+                            {currentMessageAnalysis?.probability !== null && currentMessageAnalysis
+                              ? `${currentMessageAnalysis.classification} message-level prediction from ${currentMessageAnalysis.model_version}. Probability: ${currentMessageAnalysis.probability}. Category: ${currentMessageAnalysis.category ?? (currentMessageAnalysis.classification === 'Clean' ? 'Not applicable — Clean message' : 'No category emitted')}. Not child risk or CRS.`
+                              : currentMessageAnalysis
+                                ? `Current message prediction from ${currentMessageAnalysis.model_version}; probability is not available. Category: ${currentMessageAnalysis.category ?? (currentMessageAnalysis.classification === 'Clean' ? 'Not applicable — Clean message' : 'No category emitted')}. Not child risk or CRS.`
+                              : typeof component?.value === 'number'
+                              ? `Latest stored message-level prediction from ${component.model_version ?? researchRisk?.classifier.model_version ?? 'the classifier'}. Not child risk or CRS.`
+                              : 'Not available — no current message prediction is available.'}
+                          </Text>
+                        )}
+                        {key === 'targeting' && (currentMessageAnalysis || component?.evidence?.length) ? (
+                          <Text style={styles.researchRiskNote}>
+                            Evidence: {(currentMessageAnalysis?.targeting_evidence ?? component?.evidence ?? []).join(', ') || 'Insufficient evidence'}
+                          </Text>
+                        ) : null}
+                        {key === 'severity' && (currentMessageAnalysis || component?.evidence?.length) ? (
+                          <Text style={styles.researchRiskNote}>
+                            Evidence: {(currentMessageAnalysis?.severity_evidence ?? component?.evidence ?? []).join(', ') || 'Insufficient evidence'}
+                          </Text>
+                        ) : null}
+                        {key === 'historical' && (
+                          <Text style={styles.researchRiskNote}>
+                            Historical risk score: Not available — no trained child-risk model.
+                          </Text>
+                        )}
+                        {key === 'multimodal' && (
+                          <Text style={styles.researchRiskNote}>
+                            Text: {currentMessageAnalysis
+                              ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
+                              : component?.text_status === 'available' ? 'Available' : 'Not provided'} · Image: {component?.image_status ?? 'Not provided'} · Audio: {component?.audio_status ?? 'Not provided'} · Video: {component?.video_status ?? 'Not provided'}
+                          </Text>
+                        )}
                       </View>
                     );
                   })}
@@ -347,8 +451,33 @@ const DashboardScreen: React.FC = () => {
                     riskTimeline.timeline.slice(-5).reverse().map(point => (
                       <View key={point.incident_id} style={styles.timelineRow}>
                         <Text style={styles.researchRiskText}>
+                          Incident ID: {point.incident_id}
+                        </Text>
+                        <Text style={styles.researchRiskText}>
                           {new Date(point.timestamp).toLocaleString()}
                         </Text>
+                        <Text style={styles.researchRiskText}>
+                          {point.classification ?? 'Classification not available'}
+                          {' · Category: '}
+                          {point.classification === 'Clean'
+                            ? 'Not applicable'
+                            : point.category ?? 'Not available'}
+                        </Text>
+                        {point.classifier_probability != null && (
+                          <Text style={styles.researchRiskText}>
+                            Message-level classifier probability: {String(point.classifier_probability)}
+                          </Text>
+                        )}
+                        {(point.targeting_evidence?.length ?? 0) > 0 && (
+                          <Text style={styles.researchRiskNote}>
+                            Targeting evidence: {point.targeting_evidence?.join(', ')}
+                          </Text>
+                        )}
+                        {(point.severity_evidence?.length ?? 0) > 0 && (
+                          <Text style={styles.researchRiskNote}>
+                            Severity evidence: {point.severity_evidence?.join(', ')}
+                          </Text>
+                        )}
                         <Text style={styles.researchRiskValueSmall}>
                           {point.crs === null
                             ? 'Not available'
@@ -387,10 +516,7 @@ const DashboardScreen: React.FC = () => {
                     ))
                   ) : (
                     <Text style={styles.researchRiskNote}>
-                      {riskExplanation?.status === 'unavailable' ||
-                        researchRisk?.risk_fusion?.explanation?.message === 'Explanation unavailable'
-                        ? 'Explanation unavailable'
-                        : 'Not available'}
+                      Not available — no trained child-risk fusion model is configured.
                     </Text>
                   )}
                   <Text style={styles.researchRiskNote}>
@@ -443,7 +569,11 @@ const DashboardScreen: React.FC = () => {
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.quickActionCard}
-                onPress={() => router.push(`/reports?email=${encodeURIComponent(parentEmail)}&childName=${encodeURIComponent(selectedChild)}`)}
+                onPress={() => {
+                  router.push(
+                    `/reports?email=${encodeURIComponent(parentEmail)}&childName=${encodeURIComponent(selectedChild)}&childId=${encodeURIComponent(selectedChildId)}`,
+                  );
+                }}
                 disabled={!selectedChild}
                 activeOpacity={0.7}
               >

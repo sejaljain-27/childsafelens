@@ -30,7 +30,7 @@ class ResearchRiskTests(unittest.TestCase):
             reply_to_child=True,
         )
 
-        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["status"], "observed")
         self.assertIsNone(result["score"])
         self.assertEqual(
             result["supporting_evidence"],
@@ -40,7 +40,7 @@ class ResearchRiskTests(unittest.TestCase):
     def test_text_only_targeting_runs_but_does_not_overstate_child_targeting(self):
         result = targeting_evidence("You are so stupid")
 
-        self.assertEqual(result["status"], "insufficient_evidence")
+        self.assertEqual(result["status"], "observed")
         self.assertEqual(result["analysis_status"], "completed")
         self.assertIn("second_person_reference", result["available_signals"])
         self.assertEqual(result["supporting_evidence"], ["second_person_reference"])
@@ -60,7 +60,7 @@ class ResearchRiskTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["status"], "computed")
         self.assertEqual(
             result["available_signals"],
             [

@@ -136,7 +136,13 @@ export interface IncidentType {
 
 export interface RiskTimelinePoint {
   incident_id: string;
+  child_id?: string | null;
   timestamp: number;
+  classification?: string | null;
+  category?: string | null;
+  classifier_probability?: number | null;
+  severity_evidence?: string[];
+  targeting_evidence?: string[];
   crs: number | null;
   risk_state: string;
   status: string;
@@ -180,17 +186,134 @@ export interface IncidentExplanation {
 
 export interface DashboardStats {
   total_events: number;
-  high_risk_count: number;
-  medium_risk_count: number;
-  low_risk_count: number;
+  classifier_flagged_count: number;
   pending_count: number;
 }
+
+export interface CurrentMessageAnalysis {
+  classification: 'Bullying' | 'Clean';
+  probability: number | null;
+  category: string | null;
+  model_version: string;
+  text_status: 'available' | 'not_provided';
+  targeting_evidence: string[];
+  severity_evidence: string[];
+  analyzed_at: string | null;
+}
+
+interface TextPredictionResponse {
+  classification_label: 'Bullying' | 'Clean' | null;
+  p_bullying: number | null;
+  category: string | null;
+  model_version: string;
+  model_status: string;
+  text_evidence_available: boolean;
+  targeting_evidence: { supporting_evidence?: string[] };
+  severity_evidence: { indicators?: string[] };
+  timestamp: string | null;
+}
+
+const currentMessageAnalyses = new Map<string, CurrentMessageAnalysis>();
+const currentAnalysisStorageKey = (parentEmail: string, childId: string) =>
+  `childsafelens_current_analysis:${encodeURIComponent(parentEmail.toLowerCase())}:${encodeURIComponent(childId)}`;
+
+const isCurrentMessageAnalysis = (value: unknown): value is CurrentMessageAnalysis => {
+  if (!value || typeof value !== 'object') return false;
+  const analysis = value as Partial<CurrentMessageAnalysis>;
+  return (analysis.classification === 'Bullying' || analysis.classification === 'Clean')
+    && (analysis.probability === null
+      || (typeof analysis.probability === 'number' && Number.isFinite(analysis.probability)))
+    && (analysis.category === null || typeof analysis.category === 'string')
+    && typeof analysis.model_version === 'string'
+    && (analysis.text_status === 'available' || analysis.text_status === 'not_provided')
+    && Array.isArray(analysis.targeting_evidence)
+    && analysis.targeting_evidence.every(item => typeof item === 'string')
+    && Array.isArray(analysis.severity_evidence)
+    && analysis.severity_evidence.every(item => typeof item === 'string')
+    && (analysis.analyzed_at === null || typeof analysis.analyzed_at === 'string');
+};
+
+export const getCurrentMessageAnalysis = (
+  parentEmail: string,
+  childId: string,
+): CurrentMessageAnalysis | null => {
+  if (!parentEmail || !childId || typeof window === 'undefined') return null;
+  const key = currentAnalysisStorageKey(parentEmail, childId);
+  const cached = currentMessageAnalyses.get(key);
+  if (cached) return cached;
+  const stored = window.localStorage.getItem(key) ?? window.sessionStorage.getItem(key);
+  if (!stored) return null;
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    if (!isCurrentMessageAnalysis(parsed)) {
+      throw new Error('Invalid stored current message analysis shape.');
+    }
+    const analysis = parsed;
+    currentMessageAnalyses.set(key, analysis);
+    window.localStorage.setItem(key, JSON.stringify(analysis));
+    return analysis;
+  } catch (error) {
+    console.error('Stored current message analysis is invalid', error);
+    window.localStorage.removeItem(key);
+    window.sessionStorage.removeItem(key);
+    return null;
+  }
+};
+
+export const storeCurrentMessageAnalysis = (
+  parentEmail: string,
+  childId: string,
+  analysis: CurrentMessageAnalysis,
+): void => {
+  if (!parentEmail || !childId || typeof window === 'undefined') return;
+  const key = currentAnalysisStorageKey(parentEmail, childId);
+  currentMessageAnalyses.set(key, analysis);
+  window.localStorage.setItem(key, JSON.stringify(analysis));
+  window.dispatchEvent(new Event('childsafelens-current-analysis-updated'));
+};
+
+export const analyzeCurrentMessage = async (
+  text: string,
+  childName: string,
+): Promise<CurrentMessageAnalysis> => {
+  const response = await authenticatedFetch(`${API_BASE_URL}/predict`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, child_name: childName }),
+  });
+  if (!response.ok) {
+    throw new Error(`Text prediction endpoint returned HTTP ${response.status}`);
+  }
+  const result = await response.json() as TextPredictionResponse;
+  if (
+    (result.classification_label !== 'Bullying' && result.classification_label !== 'Clean')
+    || typeof result.model_version !== 'string'
+  ) {
+    throw new Error('Text prediction endpoint returned an invalid prediction.');
+  }
+  return {
+    classification: result.classification_label,
+    probability: result.model_status === 'real'
+      && result.model_version === 'cyberbullying-cascade-v4'
+      && typeof result.p_bullying === 'number'
+      ? result.p_bullying
+      : null,
+    category: result.category,
+    model_version: result.model_version,
+    text_status: text.trim() && result.text_evidence_available ? 'available' : 'not_provided',
+    targeting_evidence: result.targeting_evidence?.supporting_evidence ?? [],
+    severity_evidence: result.severity_evidence?.indicators ?? [],
+    analyzed_at: result.timestamp,
+  };
+};
 
 export interface ResearchRisk {
   child_id: string | null;
   incident_count: number | null;
   history_metrics?: {
     dated_incident_count: number;
+    active_days: number;
+    total_incidents: number;
     active_days_last_7_days: number;
     incidents_last_7_days: number;
     average_incidents_per_active_day: number | null;
@@ -214,6 +337,27 @@ export interface ResearchRisk {
   };
   targeting_incident_count?: number;
   targeting_cues_per_incident?: number | null;
+  latest_incident?: {
+    incident_id: string;
+    timestamp: number;
+    classification: string | null;
+    category: string | null;
+    classifier_probability: number | null;
+    model_version: string | null;
+    targeting_evidence: string[];
+    severity_evidence: string[];
+  } | null;
+  text_evidence?: {
+    status: string;
+    targeting: string[];
+    severity: string[];
+  };
+  multimodal_evidence?: {
+    text: string;
+    image: string;
+    audio: string;
+    video: string;
+  };
   classifier: {
     name: string;
     status: string;
@@ -248,12 +392,21 @@ export interface ResearchRisk {
 export interface ResearchComponent {
   value: number | null;
   status: string;
+  model_version?: string | null;
+  scope?: string;
+  evidence?: string[];
   observed_evidence_count?: number;
   observed_incident_count?: number;
   dated_incident_count?: number;
+  active_day_count?: number;
   active_day_count_last_7_days?: number;
+  average_incidents_per_active_day?: number | null;
   risk_score_status?: string;
   observed_attacker_count?: number | null;
+  text_status?: string;
+  image_status?: string;
+  audio_status?: string;
+  video_status?: string;
 }
 
 interface Capability {
@@ -359,11 +512,19 @@ export const fetchResearchCapabilities = async (): Promise<ResearchCapabilities>
 
 export const fetchResearchRisk = async (
   parentEmail: string,
-  childName: string,
+  childId: string,
 ): Promise<ResearchRisk> => {
-  const params = new URLSearchParams({ parentEmail, childName });
+  if (!childId.trim()) {
+    return unavailableResearchRisk(
+      'child_id_unavailable',
+      'The selected child profile ID is unavailable; no child-wide query was made.',
+    );
+  }
+  const params = new URLSearchParams({ parentEmail });
   try {
-    const response = await authenticatedFetch(`${API_BASE_URL}/children/risk?${params.toString()}`);
+    const response = await authenticatedFetch(
+      `${API_BASE_URL}/children/${encodeURIComponent(childId)}/risk?${params.toString()}`,
+    );
     if (!response.ok) {
       throw new Error(`Risk endpoint returned HTTP ${response.status}`);
     }
@@ -378,6 +539,14 @@ export const fetchChildRiskTimeline = async (
   childId: string,
   parentEmail: string,
 ): Promise<ChildRiskTimeline> => {
+  if (!childId.trim()) {
+    return {
+      child_id: '',
+      status: 'unavailable',
+      storage: 'unavailable',
+      timeline: [],
+    };
+  }
   const params = new URLSearchParams({ parentEmail });
   try {
     const response = await authenticatedFetch(
@@ -397,6 +566,7 @@ export const fetchSocialGraphRisk = async (
   childId: string,
   parentEmail: string,
 ): Promise<SocialGraphRisk | null> => {
+  if (!childId.trim()) return null;
   const params = new URLSearchParams({ parentEmail });
   try {
     const response = await authenticatedFetch(
@@ -431,51 +601,37 @@ export const fetchIncidentExplanation = async (
   }
 };
 
-export const fetchAlerts = async (parentEmail?: string, childName?: string): Promise<IncidentType[]> => {
-  try {
-    let url = `${API_BASE_URL}/incidents`;
-    const params = new URLSearchParams();
-    if (parentEmail) params.append('parentEmail', parentEmail);
-    if (childName) params.append('childName', childName);
-    if (params.toString()) url += `?${params.toString()}`;
+export const fetchAlerts = async (parentEmail?: string, childId?: string): Promise<IncidentType[]> => {
+  let url = `${API_BASE_URL}/incidents`;
+  const params = new URLSearchParams();
+  if (parentEmail) params.append('parentEmail', parentEmail);
+  if (childId) params.append('childId', childId);
+  if (params.toString()) url += `?${params.toString()}`;
 
-    const response = await authenticatedFetch(url);
-    if (!response.ok) {
-      throw new Error(`Alerts endpoint returned HTTP ${response.status}`);
-    }
-    const data = await response.json();
-    if (!Array.isArray(data)) {
-      throw new Error('Alerts endpoint returned an invalid response');
-    }
-    return data;
-  } catch (error) {
-    // Graceful fallback when backend is offline
-    return [];
+  const response = await authenticatedFetch(url);
+  if (!response.ok) {
+    throw new Error(`Alerts endpoint returned HTTP ${response.status}`);
   }
+  const data: unknown = await response.json();
+  if (!Array.isArray(data)) {
+    throw new Error('Alerts endpoint returned an invalid response');
+  }
+  return data as IncidentType[];
 };
 
-export const fetchDashboardStats = async (parentEmail?: string, childName?: string): Promise<DashboardStats> => {
-  try {
-    let url = `${API_BASE_URL}/events`;
-    const params = new URLSearchParams();
-    if (parentEmail) params.append('parentEmail', parentEmail);
-    if (childName) params.append('childName', childName);
-    if (params.toString()) url += `?${params.toString()}`;
-
-    const response = await authenticatedFetch(url);
-    const data = await response.json();
-    const incidents = await fetchAlerts(parentEmail, childName);
-    const pendingCount = incidents.filter(i => i.status === 'PENDING' || i.status === 'PENDING_PARENT_REVIEW' || i.status === 'EDIT_REQUIRED').length;
-    return {
-      total_events: data.total_events || incidents.length,
-      high_risk_count: data.high_risk_count || incidents.filter(i => i.riskLevel === 'HIGH' || i.riskLevel === 'CRITICAL' || i.riskLevel === 'high_risk').length,
-      medium_risk_count: data.medium_risk_count || incidents.filter(i => i.riskLevel === 'MEDIUM' || i.riskLevel === 'medium_risk').length,
-      low_risk_count: data.low_risk_count || incidents.filter(i => i.riskLevel === 'LOW' || i.riskLevel === 'low_risk').length,
-      pending_count: pendingCount
-    };
-  } catch (error) {
-    return { total_events: 0, high_risk_count: 0, medium_risk_count: 0, low_risk_count: 0, pending_count: 0 };
-  }
+export const fetchDashboardStats = async (
+  incidents?: IncidentType[],
+): Promise<DashboardStats> => {
+  const records = incidents ?? await fetchAlerts();
+  return {
+    total_events: records.length,
+    classifier_flagged_count: records.filter(incident =>
+      ['HIGH', 'CRITICAL', 'HIGH_RISK'].includes(incident.riskLevel.toUpperCase()),
+    ).length,
+    pending_count: records.filter(incident =>
+      ['PENDING', 'PENDING_PARENT_REVIEW', 'EDIT_REQUIRED'].includes(incident.status),
+    ).length,
+  };
 };
 
 export const submitDecision = async (incidentId: string, decision: "ALLOW" | "BLOCK" | "EDIT", guidance?: string, editedContent?: string) => {
@@ -498,7 +654,7 @@ export const submitParentDecision = async (incidentId: string, decision: "ALLOW"
     }
     return await response.json();
   } catch (error) {
-    console.warn("Failed to submit parent decision (backend offline)");
-    return { status: "success" };
+    console.error("Failed to submit parent decision", error);
+    throw error;
   }
 };

@@ -23,13 +23,13 @@ const AlertCard: React.FC<AlertCardProps> = ({ alert, onDecision }) => {
             color={isHigh ? '#E91E63' : '#FF9800'}
           />
           <Text style={styles.badgeText}>
-            {alert.riskLevel} Risk ({alert.category}) [{isIncoming ? 'Incoming' : 'Outgoing'}]
+            Message classifier: {alert.riskLevel} ({alert.category}) [{isIncoming ? 'Incoming' : 'Outgoing'}]
           </Text>
         </View>
         <Text style={styles.time}>{new Date(alert.timestamp).toLocaleTimeString()}</Text>
       </View>
       <Text style={[styles.message, isHigh && styles.highRiskMessage]}>
-        "{alert.messageSnippet}"
+        {'"'}{alert.messageSnippet}{'"'}
       </Text>
       <Text style={styles.status}>Status: {alert.status} {alert.parentDecision ? `(Parent: ${alert.parentDecision})` : ''}</Text>
 

@@ -164,7 +164,7 @@ dashboard starts with empty counts. It does not delete accounts or profiles.
 ## Research risk-assessment foundation
 
 The existing incident and parent-decision APIs remain in place. The
-`/research/status`, `/children/risk`, `/children/{child_id}/risk`,
+`/research/status`, `/children/{child_id}/risk`,
 `/children/{child_id}/timeline`, `/children/{child_id}/social-graph`, and
 `/incidents/{incident_id}/explanation` endpoints expose current evidence and
 capability status. Timeline risk is recomputed from each actual incident
@@ -173,6 +173,19 @@ contributions when available, preserving the parent-action field; otherwise
 it returns `status: unavailable` and `"Explanation unavailable"`. History
 is persisted in the existing SQLite incident records and loaded on backend
 startup.
+
+Child-scoped research and analytics requests require the selected child
+profile's explicit ID; child names are not accepted as query fallbacks.
+`/analytics` requires a non-empty `childId` query parameter. Android clients
+that still submit the child's display name during incident creation are
+normalized to that parent's matching child-profile ID before storage. Research
+views use parent-scoped incidents with a Bullying or Cyberbullying result
+recorded by the classifier, including legacy records whose classifier label is
+stored under `classifierOutput`. The `/predict` response includes the supplied
+message probability and text-derived targeting/severity evidence without
+creating an incident. The dashboard shares that transient analysis between its
+research views; only cascade-v4 probability is displayed, and it is not a
+child-risk score.
 
 `POST /analyze/audio`, `/analyze/image`, and `/analyze/video` accept a JSON
 `media_reference` and return HTTP 503 with modality-specific

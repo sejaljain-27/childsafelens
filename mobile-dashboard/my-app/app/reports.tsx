@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, Text, ScrollView, SafeAreaView, TouchableOpacity, Dimensions } from 'react-native';
+import { View, StyleSheet, Text, ScrollView, SafeAreaView, TouchableOpacity, Dimensions, TextInput, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -8,11 +8,15 @@ import {
   API_BASE_URL,
   fetchResearchCapabilities,
   fetchResearchRisk,
+  analyzeCurrentMessage,
+  getCurrentMessageAnalysis,
+  storeCurrentMessageAnalysis,
   authenticatedFetch,
   hasParentSession,
   type ResearchCapabilities,
   type ResearchComponent,
   type ResearchRisk,
+  type CurrentMessageAnalysis,
 } from '../services/alertsService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -48,23 +52,35 @@ export default function ReportsScreen() {
   const [researchRisk, setResearchRisk] = useState<ResearchRisk | null>(null);
   const [researchCapabilities, setResearchCapabilities] = useState<ResearchCapabilities | null>(null);
   const [researchLoaded, setResearchLoaded] = useState(false);
+  const [currentMessageAnalysis, setCurrentMessageAnalysis] = useState<CurrentMessageAnalysis | null>(null);
+  const childId = ((routeParams.childId as string) || '').trim();
+  const childIdUnavailable = !childId;
+  const parentEmail = hasParentSession()
+    ? (routeParams.email as string) || localStorage.getItem('childsafelens_parent_email') || ''
+    : '';
+  const childName = ((routeParams.childName as string) || '').trim() || 'selected child';
 
   useEffect(() => {
-    const authenticated = hasParentSession();
-    const parentEmail = authenticated
-      ? (routeParams.email as string) || localStorage.getItem('childsafelens_parent_email') || ''
-      : '';
     if (!parentEmail) {
       router.replace('/');
       return;
     }
-    const params = new URLSearchParams({ parentEmail });
-    if (routeParams.childName) {
-      params.set('childName', routeParams.childName as string);
+    if (!childId) {
+      void Promise.resolve().then(() => {
+        setResearchRisk(null);
+        setAnalytics(null);
+        setAnalyticsError(true);
+        setAnalyticsLoaded(true);
+      });
+      void fetchResearchCapabilities()
+        .then(setResearchCapabilities)
+        .catch(error => console.error('Failed to load research capability status', error))
+        .finally(() => setResearchLoaded(true));
+      return;
     }
-    const childName = (routeParams.childName as string) || 'Aarav';
+    const params = new URLSearchParams({ parentEmail, childId });
     Promise.all([
-      fetchResearchRisk(parentEmail, childName),
+      fetchResearchRisk(parentEmail, childId),
       fetchResearchCapabilities(),
     ]).then(([risk, capabilities]) => {
       setResearchRisk(risk);
@@ -90,11 +106,27 @@ export default function ReportsScreen() {
         setAnalyticsError(true);
       })
       .finally(() => setAnalyticsLoaded(true));
-  }, [routeParams.childName, routeParams.email, router]);
+  }, [childId, parentEmail, router]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const updateCurrentAnalysis = () => {
+      setCurrentMessageAnalysis(
+        parentEmail && childId
+          ? getCurrentMessageAnalysis(parentEmail, childId)
+          : null,
+      );
+    };
+    updateCurrentAnalysis();
+    window.addEventListener('childsafelens-current-analysis-updated', updateCurrentAnalysis);
+    return () => window.removeEventListener(
+      'childsafelens-current-analysis-updated',
+      updateCurrentAnalysis,
+    );
+  }, [parentEmail, childId]);
 
   const dailyIncidents = analytics?.daily_incidents ?? [];
   const maxDailyCount = Math.max(0, ...dailyIncidents.map(day => day.count));
-  const childName = (routeParams.childName as string) || 'Aarav';
   const unavailableStatus = researchLoaded ? 'Not available' : 'Loading analysis…';
   const formatComponentStatus = (component?: ResearchComponent) => {
     if (!component) return unavailableStatus;
@@ -108,6 +140,10 @@ export default function ReportsScreen() {
   };
   const formatStatus = (status?: string) =>
     status ? status.replace(/_/g, ' ') : unavailableStatus;
+  const temporalHistory = researchRisk?.history_metrics;
+  const temporalStatus = temporalHistory
+    ? `${temporalHistory.total_incidents ?? 0} observed incidents across ${temporalHistory.active_days ?? 0} active days`
+    : formatComponentStatus(researchRisk?.components.temporal);
   const analysisCards: AnalysisCardData[] = [
     {
       title: 'Cyberbullying classification',
@@ -119,42 +155,118 @@ export default function ReportsScreen() {
         ?? `Model version: ${researchCapabilities?.classifier.model_version ?? 'Not available'}. This detects message-level classification, not child-level risk.`,
     },
     {
+      title: 'Cyberbullying classifier probability',
+      icon: 'analytics',
+      status: childIdUnavailable
+        ? 'Not available'
+        : currentMessageAnalysis
+          ? currentMessageAnalysis.probability === null
+            ? 'Not available'
+            : String(currentMessageAnalysis.probability)
+          : typeof researchRisk?.latest_incident?.classifier_probability === 'number'
+          ? `Latest stored message: ${String(researchRisk.latest_incident.classifier_probability)}`
+          : 'Not available',
+      detail: childIdUnavailable
+        ? 'Reason: selected child ID is unavailable; no query was made.'
+        : currentMessageAnalysis
+          ? `Message-level classifier probability from ${currentMessageAnalysis.model_version}${currentMessageAnalysis.category ? `; category: ${currentMessageAnalysis.category}` : ''}. NOT child risk / CRS.`
+          : researchRisk?.latest_incident?.model_version
+          ? `Message-level classifier probability from ${researchRisk.latest_incident.model_version}. This is not CRS, child risk, historical risk, or overall risk.`
+          : 'Reason: no current message prediction is available.',
+    },
+    {
       title: 'Category classification',
       icon: 'category',
-      status: formatStatus(researchCapabilities?.category_classifier.status),
-      detail: 'Category model artifact is not configured; no category prediction is shown.',
+      status: currentMessageAnalysis
+        ? currentMessageAnalysis.classification === 'Clean'
+          ? 'Not applicable — Clean message'
+          : currentMessageAnalysis.category ?? 'No category emitted'
+        : formatStatus(researchCapabilities?.category_classifier.status),
+      detail: currentMessageAnalysis
+        ? currentMessageAnalysis.classification === 'Clean'
+          ? 'The current message was classified as Clean; no harmful category was emitted.'
+          : `Current model category from ${currentMessageAnalysis.model_version}.`
+        : researchCapabilities?.category_classifier.status === 'available'
+        ? researchRisk?.latest_incident?.classification === 'Clean'
+          ? 'Category: Not applicable for a clean message.'
+          : researchRisk?.latest_incident?.category
+            ? `Latest model category: ${researchRisk.latest_incident.category}.`
+            : 'The supplied cascade category head is configured; it emits a category only after a bullying classification.'
+        : 'The supplied cascade category head is not configured.',
     },
     {
       title: 'Targeting evidence',
       icon: 'person-search',
-      status: researchRisk
-        ? `${researchRisk.targeting_evidence_count ?? 'Not available'} observed evidence item(s)`
+      status: childIdUnavailable
+        ? 'Not available — selected child ID missing'
+        : currentMessageAnalysis
+          ? currentMessageAnalysis.targeting_evidence.length
+            ? `Observed (${currentMessageAnalysis.targeting_evidence.length})`
+            : 'Insufficient evidence'
+        : researchRisk?.components.targeting.status === 'computed'
+        ? 'Computed'
+        : researchRisk?.components.targeting.status === 'observed_uncalibrated'
+          ? `Observed (${researchRisk.components.targeting.observed_evidence_count ?? 0} evidence item(s)); not calibrated`
+          : researchRisk
+            ? 'Insufficient evidence'
+            : unavailableStatus,
+      detail: childIdUnavailable
+        ? 'No child-scoped query was made because the selected child ID is unavailable.'
+        : currentMessageAnalysis
+        ? `Current text evidence: ${currentMessageAnalysis.targeting_evidence.join(', ') || 'Insufficient evidence'}. No probability is calculated.`
+        : researchRisk
+        ? `Evidence: ${researchRisk.components.targeting.evidence?.join(', ') || 'None observed'}. ${researchRisk.targeting_incident_count ?? 0} incident(s) contain targeting cues. No probability is shown without configured research weights.`
         : unavailableStatus,
-      detail: researchRisk
-        ? `${researchRisk.targeting_incident_count ?? 0} incident(s) contain observed targeting cues; ${researchRisk.targeting_cues_per_incident?.toFixed(2) ?? 'Not available'} cues per incident. Descriptive only; a calibrated score requires research-defined weights.`
+    },
+    {
+      title: 'Severity evidence',
+      icon: 'warning',
+      status: childIdUnavailable
+        ? 'Not available — selected child ID missing'
+        : currentMessageAnalysis
+          ? currentMessageAnalysis.severity_evidence.length
+            ? `Observed (${currentMessageAnalysis.severity_evidence.length})`
+            : 'Insufficient evidence'
+        : researchRisk?.components.severity.status === 'computed'
+        ? 'Computed'
+        : researchRisk?.components.severity.status === 'observed_uncalibrated'
+          ? `Observed (${researchRisk.components.severity.observed_evidence_count ?? 0} evidence item(s)); not calibrated`
+          : researchRisk
+            ? 'Insufficient evidence'
+            : unavailableStatus,
+      detail: childIdUnavailable
+        ? 'No child-scoped query was made because the selected child ID is unavailable.'
+        : currentMessageAnalysis
+        ? `Current text evidence: ${currentMessageAnalysis.severity_evidence.join(', ') || 'Insufficient evidence'}. No probability is calculated.`
+        : researchRisk
+        ? `Text evidence: ${researchRisk.components.severity.evidence?.join(', ') || 'None observed'}. A severity probability is not shown without configured research weights.`
         : unavailableStatus,
     },
     {
       title: 'Multimodal evidence',
       icon: 'perm-media',
-      status: formatComponentStatus(researchRisk?.components.multimodal),
-      detail: `Audio: ${formatStatus(researchCapabilities?.multimodal.audio.status)} · Image: ${formatStatus(researchCapabilities?.multimodal.image.status)} · Video: ${formatStatus(researchCapabilities?.multimodal.video.status)}`,
+      status: childIdUnavailable ? 'Not available — selected child ID missing' : formatComponentStatus(researchRisk?.components.multimodal),
+      detail: childIdUnavailable
+        ? 'No child-scoped query was made because the selected child ID is unavailable.'
+        : `Text: ${currentMessageAnalysis
+          ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
+          : researchRisk?.multimodal_evidence?.text === 'available' ? 'Available' : 'Not provided'} · Image: Not provided · Audio: Not provided · Video: Not provided. Optional media analysis is not implemented.`,
     },
     {
       title: 'Temporal repetition',
       icon: 'history',
-      status: researchRisk?.history_metrics
-        ? `${researchRisk.history_metrics.incidents_last_7_days} incident(s) across ${researchRisk.history_metrics.active_days_last_7_days} active day(s); ${researchRisk.history_metrics.average_incidents_per_active_day?.toFixed(2) ?? 'Not available'} per active day`
-        : formatComponentStatus(researchRisk?.components.temporal),
+      status: childIdUnavailable
+        ? 'Not available — selected child ID missing'
+        : temporalStatus,
       detail: researchCapabilities?.research_parameters.temporal_decay_configured
-        ? 'Observed activity is counted above. A temporal risk score still requires non-simulated incident and targeting scores.'
-        : 'Observed activity is counted above; no calibrated decay parameter or valid research-scored history is configured.',
+        ? 'Temporal risk remains unavailable unless stored evidence and calibrated parameters support its calculation.'
+        : 'Descriptive incident history only; no calibrated temporal risk score is available.',
     },
     {
       title: 'Escalation',
       icon: 'trending-up',
       status: formatComponentStatus(researchRisk?.components.escalation),
-      detail: 'Escalation needs severity history; Severity analysis is skipped as requested, so no escalation score is calculated.',
+      detail: 'Escalation score is not available until calibrated severity history and escalation parameters are configured.',
     },
     {
       title: 'Social graph',
@@ -167,11 +279,15 @@ export default function ReportsScreen() {
     {
       title: 'Historical risk',
       icon: 'timeline',
-      status: researchRisk?.history_metrics
-        ? `${researchRisk.incident_count ?? 0} observed incident(s) in history`
-        : formatComponentStatus(researchRisk?.components.historical),
-      detail: researchRisk?.history_metrics
-        ? `${researchRisk.history_metrics.dated_incident_count} incident(s) have timestamps. Historical risk prediction remains unavailable without a trained child-risk model.`
+      status: childIdUnavailable
+        ? 'Not available — selected child ID missing'
+        : researchRisk?.history_metrics
+          ? `${researchRisk.history_metrics.total_incidents ?? 0} observed incident(s) in history`
+          : formatComponentStatus(researchRisk?.components.historical),
+      detail: childIdUnavailable
+        ? 'No child-scoped query was made because the selected child ID is unavailable.'
+        : researchRisk?.history_metrics
+        ? `${researchRisk.history_metrics.dated_incident_count} incident(s) have timestamps. Historical activity is observed; historical risk score is not available without a trained child-risk model.`
         : 'Historical activity and risk are unavailable until incident history is recorded.',
     },
     {
@@ -217,6 +333,21 @@ export default function ReportsScreen() {
             <Text style={styles.analysisSubtitle}>
               Evidence and model readiness for {childName}. Unavailable values are not estimated.
             </Text>
+            {childIdUnavailable && (
+              <Text style={styles.analysisDisclaimer}>
+                The selected child profile ID is unavailable. No cross-child or name-based incident query was made.
+              </Text>
+            )}
+            {currentMessageAnalysis && (
+              <Text style={styles.analysisNote}>
+                Current message: {currentMessageAnalysis.classification}
+                {currentMessageAnalysis.probability !== null
+                  ? ` · probability ${String(currentMessageAnalysis.probability)}`
+                  : ' · probability not available'}
+                {currentMessageAnalysis.category ? ` · category ${currentMessageAnalysis.category}` : ''}
+                {' · Message-level only, NOT child risk / CRS.'}
+              </Text>
+            )}
             <View style={styles.analysisGrid}>
               {analysisCards.map(card => (
                 <View key={card.title} style={styles.analysisCard}>
@@ -273,27 +404,34 @@ export default function ReportsScreen() {
           {/* Statistics Cards */}
           <View style={styles.statsGrid}>
             <View style={styles.statCard}>
-              <Text style={styles.statNumber}>{analyticsLoaded ? analytics?.total_incidents ?? 'Not available' : 'Loading'}</Text>
-              <Text style={styles.statLabel}>Total Incidents</Text>
+              <Text style={styles.statNumber}>
+                {analyticsLoaded
+                  ? researchRisk?.history_metrics?.total_incidents ?? researchRisk?.incident_count ?? analytics?.total_incidents ?? 'Not available'
+                  : 'Loading'}
+              </Text>
+              <Text style={styles.statLabel}>Harmful Incidents</Text>
             </View>
 
             <View style={styles.statCard}>
               <Text style={styles.statNumber}>{analyticsLoaded ? analytics?.high_risk ?? 'Not available' : 'Loading'}</Text>
-              <Text style={styles.statLabel}>High Risk</Text>
+              <Text style={styles.statLabel}>Classifier Flags (Message-level)</Text>
             </View>
           </View>
 
           <View style={styles.statsGrid}>
             <View style={styles.statCard}>
               <Text style={styles.statNumber}>{analyticsLoaded ? analytics?.medium_risk ?? 'Not available' : 'Loading'}</Text>
-              <Text style={styles.statLabel}>Medium Risk</Text>
+              <Text style={styles.statLabel}>Message-level Medium Labels</Text>
             </View>
 
             <View style={styles.statCard}>
               <Text style={styles.statNumber}>{analyticsLoaded ? analytics?.low_risk ?? 'Not available' : 'Loading'}</Text>
-              <Text style={styles.statLabel}>Low Risk</Text>
+              <Text style={styles.statLabel}>Message-level Low Labels</Text>
             </View>
           </View>
+          <Text style={styles.analysisNote}>
+            Message-level classifier labels are not CRS or child-level risk.
+          </Text>
 
           <View style={styles.statsGrid}>
             <View style={styles.statCard}>

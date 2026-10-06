@@ -6,28 +6,45 @@ import { fetchAlerts, submitDecision, type IncidentType } from '../services/aler
 const AlertsScreen: React.FC = () => {
   const [alerts, setAlerts] = useState<IncidentType[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadAlerts = async () => {
     setRefreshing(true);
-    const data = await fetchAlerts();
-    setAlerts(data);
-    setRefreshing(false);
+    try {
+      const data = await fetchAlerts();
+      setAlerts(data);
+      setLoadError(null);
+    } catch (error) {
+      console.error('Failed to load parent alerts', error);
+      setLoadError(error instanceof Error ? error.message : 'Unable to load parent alerts.');
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   useEffect(() => {
-    loadAlerts();
+    const initialLoad = setTimeout(() => void loadAlerts(), 0);
     const interval = setInterval(loadAlerts, 4000); // Poll for new incidents & status changes
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initialLoad);
+      clearInterval(interval);
+    };
   }, []);
 
   const handleDecision = async (incidentId: string, decision: 'ALLOW' | 'BLOCK' | 'EDIT') => {
-    await submitDecision(incidentId, decision);
-    loadAlerts();
+    try {
+      await submitDecision(incidentId, decision);
+      await loadAlerts();
+    } catch (error) {
+      console.error('Failed to submit parent decision', error);
+      setLoadError(error instanceof Error ? error.message : 'Unable to submit parent decision.');
+    }
   };
 
   return (
     <View style={styles.container}>
       <Text style={styles.header}>Parent Alert Approvals</Text>
+      {loadError && <Text style={styles.error}>{loadError}</Text>}
       <FlatList
         data={alerts}
         keyExtractor={item => item.incidentId}
@@ -62,6 +79,11 @@ const styles = StyleSheet.create({
     color: '#64748B',
     marginTop: 40,
     fontSize: 16,
+  },
+  error: {
+    color: '#B91C1C',
+    marginBottom: 12,
+    textAlign: 'center',
   },
 });
 

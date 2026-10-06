@@ -21,37 +21,48 @@ import type { RootStackParamList } from '../navigation/RootNavigator';
 
 const DashboardScreen: React.FC = () => {
   const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
-  const [selectedChild, setSelectedChild] = useState<'Aarav' | 'Kiara'>('Aarav');
   const [stats, setStats] = useState<DashboardStats>({
     total_events: 0,
-    high_risk_count: 0,
-    medium_risk_count: 0,
-    low_risk_count: 0,
+    classifier_flagged_count: 0,
     pending_count: 0,
   });
   const [recentIncidents, setRecentIncidents] = useState<IncidentType[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadData = async () => {
     setRefreshing(true);
-    const [dashboardStats, incidents] = await Promise.all([
-      fetchDashboardStats(),
-      fetchAlerts()
-    ]);
-    setStats(dashboardStats);
-    setRecentIncidents(incidents);
-    setRefreshing(false);
+    try {
+      const incidents = await fetchAlerts();
+      const dashboardStats = await fetchDashboardStats(incidents);
+      setStats(dashboardStats);
+      setRecentIncidents(incidents);
+      setLoadError(null);
+    } catch (error) {
+      console.error('Failed to load parent incidents', error);
+      setLoadError(error instanceof Error ? error.message : 'Unable to load parent incidents.');
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   useEffect(() => {
-    loadData();
+    const initialLoad = setTimeout(() => void loadData(), 0);
     const interval = setInterval(loadData, 4000); // Live poll for real Android incidents
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initialLoad);
+      clearInterval(interval);
+    };
   }, []);
 
   const handleDecision = async (incidentId: string, decision: 'ALLOW' | 'BLOCK' | 'EDIT') => {
-    await submitDecision(incidentId, decision);
-    loadData();
+    try {
+      await submitDecision(incidentId, decision);
+      await loadData();
+    } catch (error) {
+      console.error('Failed to submit parent decision', error);
+      setLoadError(error instanceof Error ? error.message : 'Unable to submit parent decision.');
+    }
   };
 
   return (
@@ -74,41 +85,18 @@ const DashboardScreen: React.FC = () => {
           </TouchableOpacity>
         </View>
 
-        {/* Children Selector & Summary Metrics */}
+        {/* Parent-wide incident summary */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>My Children</Text>
-          <View style={styles.childTabsRow}>
-            <TouchableOpacity
-              style={[styles.childTab, selectedChild === 'Aarav' && styles.activeChildTab]}
-              onPress={() => setSelectedChild('Aarav')}
-            >
-              <Text style={[styles.childTabText, selectedChild === 'Aarav' && styles.activeChildTabText]}>Aarav (12 yrs)</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.childTab, selectedChild === 'Kiara' && styles.activeChildTab]}
-              onPress={() => setSelectedChild('Kiara')}
-            >
-              <Text style={[styles.childTabText, selectedChild === 'Kiara' && styles.activeChildTabText]}>Kiara (10 yrs)</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Metric Cards */}
+          <Text style={styles.sectionTitle}>Parent incident summary</Text>
+          {loadError && <Text style={styles.emptyText}>{loadError}</Text>}
           <View style={styles.metricsGrid}>
             <View style={[styles.metricCard, { backgroundColor: '#FEF3C7' }]}>
               <Text style={[styles.metricNumber, { color: '#D97706' }]}>{stats.pending_count}</Text>
-              <Text style={styles.metricLabel}>Pending</Text>
-            </View>
-            <View style={[styles.metricCard, { backgroundColor: '#E0F2FE' }]}>
-              <Text style={[styles.metricNumber, { color: '#0284C7' }]}>{stats.total_events}</Text>
-              <Text style={styles.metricLabel}>This Week</Text>
-            </View>
-            <View style={[styles.metricCard, { backgroundColor: '#FFE4E6' }]}>
-              <Text style={[styles.metricNumber, { color: '#F43F5E' }]}>{stats.high_risk_count}</Text>
-              <Text style={styles.metricLabel}>High Risk</Text>
+              <Text style={styles.metricLabel}>Pending review</Text>
             </View>
             <View style={[styles.metricCard, { backgroundColor: '#DCFCE7' }]}>
               <Text style={[styles.metricNumber, { color: '#16A34A' }]}>{stats.total_events}</Text>
-              <Text style={styles.metricLabel}>Total</Text>
+              <Text style={styles.metricLabel}>Harmful incidents</Text>
             </View>
           </View>
         </View>
