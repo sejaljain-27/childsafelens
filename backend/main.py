@@ -103,7 +103,6 @@ DEFAULT_DEV_AUTH_SECRET = "childsafelens-local-dev-auth-secret-32bytes"
 
 
 def _auth_secret() -> bytes:
-<<<<<<< HEAD
     secret = os.environ.get("CHILDSAFELENS_AUTH_SECRET")
     if secret and len(secret.encode("utf-8")) >= 32:
         return secret.encode("utf-8")
@@ -117,10 +116,6 @@ def _auth_secret() -> bytes:
         status_code=503,
         detail="Authentication is not configured on this server.",
     )
-=======
-    secret = os.environ.get("CHILDSAFELENS_AUTH_SECRET", "childsafelens-default-development-secret-32-bytes-minimum")
-    return secret.encode("utf-8")
->>>>>>> acd887d5d0ceea8f55276b7d84465c40a06ed470
 
 
 def _base64url(data: bytes) -> str:
