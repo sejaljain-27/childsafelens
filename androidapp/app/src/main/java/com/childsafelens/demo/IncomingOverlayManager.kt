@@ -12,6 +12,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.TextView
+import java.util.concurrent.Executors
 
 /**
  * Manages non-focusable accessibility overlays covering masked incoming text nodes
@@ -22,6 +23,10 @@ class IncomingOverlayManager(private val context: Context) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val activeOverlays = mutableMapOf<String, View>() // Keyed by node text / hash
     private val textCache = mutableMapOf<String, String>() // Cache for Masker.mask results
+    private val overlayOriginalText = mutableMapOf<String, String>()
+    private val classifierResults = mutableMapOf<String, ClassificationResult>()
+    private val classificationRequests = mutableSetOf<String>()
+    private val classifierExecutor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
     private var pendingUpdate: Runnable? = null
 
@@ -50,6 +55,7 @@ class IncomingOverlayManager(private val context: Context) {
                     Log.e("IncomingOverlay", "Error removing stale overlay", e)
                 }
             }
+            overlayOriginalText.remove(key)
         }
     }
 
@@ -67,8 +73,8 @@ class IncomingOverlayManager(private val context: Context) {
                 node.getBoundsInScreen(rect)
 
                 if (rect.width() > 0 && rect.height() > 0) {
-                    val score = Inference.scoreText(text)
-                    val showHint = score > 0.5f
+                    requestClassification(text)
+                    val showHint = classifierResults[text]?.label == "Bullying"
 
                     val existingView = activeOverlays[key]
                     if (existingView != null) {
@@ -101,6 +107,7 @@ class IncomingOverlayManager(private val context: Context) {
                         try {
                             windowManager.addView(overlayView, params)
                             activeOverlays[key] = overlayView
+                            overlayOriginalText[key] = text
                         } catch (e: Exception) {
                             Log.e("IncomingOverlay", "Error adding incoming overlay", e)
                         }
@@ -113,6 +120,31 @@ class IncomingOverlayManager(private val context: Context) {
             val child = node.getChild(i) ?: continue
             traverseAndCover(child, coveredKeys)
             child.recycle()
+        }
+    }
+
+    private fun requestClassification(text: String) {
+        if (classifierResults.containsKey(text) || !classificationRequests.add(text)) return
+        classifierExecutor.execute {
+            val result = BackendClassifierClient.classify(text) { rechecked ->
+                applyClassificationResult(text, rechecked)
+            }
+            applyClassificationResult(text, result)
+        }
+    }
+
+    private fun applyClassificationResult(text: String, result: ClassificationResult) {
+        if (result.offlineUnverified) return
+        handler.post {
+            classifierResults[text] = result
+            classificationRequests.remove(text)
+            activeOverlays.forEach { (key, view) ->
+                if (overlayOriginalText[key] == text) {
+                    val maskedText = textCache[text] ?: text
+                    (view as? TextView)?.text =
+                        if (result.label == "Bullying") "$maskedText  ⚠️ (Hurtful)" else maskedText
+                }
+            }
         }
     }
 
@@ -138,6 +170,9 @@ class IncomingOverlayManager(private val context: Context) {
             }
         }
         activeOverlays.clear()
+        overlayOriginalText.clear()
+        classifierResults.clear()
+        classificationRequests.clear()
         textCache.clear()
     }
 }

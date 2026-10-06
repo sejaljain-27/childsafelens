@@ -8,6 +8,7 @@ __pycache__/
 .pytest_cache/
 *.pkl
 !ml/**/*.pkl
+backend/data/*.sqlite3
 
 # --- Node / Expo (mobile-dashboard, mobile-input-demo) ---
 node_modules/

@@ -22,6 +22,9 @@ export default function App() {
   const [nudgeVisible, setNudgeVisible] = useState(false);
   const [pendingLabel, setPendingLabel] = useState(null);
   const [pendingScore, setPendingScore] = useState(null);
+  const [pendingDevelopmentNotice, setPendingDevelopmentNotice] = useState(null);
+  const [pendingClassificationMetadata, setPendingClassificationMetadata] = useState({});
+  const [classificationNotice, setClassificationNotice] = useState(null);
   const [history, setHistory] = useState([]); // demo-only visible log
 
   async function handleSend() {
@@ -29,15 +32,32 @@ export default function App() {
     setIsSending(true);
 
     try {
-      const { risk_score, is_risky, label } = await predict(message);
+      const result = await predict(message);
+      const { risk_score, is_risky, label } = result;
+      setClassificationNotice(result.classification_notice || null);
+      const classificationMetadata = {
+        model_status: result.model_status,
+        model_version: result.model_version,
+        development_simulation: result.development_simulation,
+        model_name: result.model_name,
+        modality: result.modality,
+        processing_status: result.processing_status,
+      };
 
       if (is_risky) {
         // Hold the message, show the nudge, wait for the sender's choice.
         setPendingLabel(label);
         setPendingScore(risk_score);
+        setPendingDevelopmentNotice(result.classification_notice || null);
+        setPendingClassificationMetadata(classificationMetadata);
         setNudgeVisible(true);
       } else {
-        await finalizeSend(label, risk_score);
+        await finalizeSend(
+          label,
+          risk_score,
+          result.classification_notice,
+          classificationMetadata
+        );
       }
     } catch (err) {
       addToHistory(`Error contacting server: ${err.message}`);
@@ -46,9 +66,10 @@ export default function App() {
     }
   }
 
-  async function finalizeSend(label, score) {
-    await logEvent(label);
-    addToHistory(`Sent — risk: ${label} (${score.toFixed(2)})`);
+  async function finalizeSend(label, score, notice, classificationMetadata) {
+    await logEvent(label, classificationMetadata);
+    const prefix = notice ? `${notice} — ` : "";
+    addToHistory(`${prefix}Sent — risk: ${label} (${score.toFixed(2)})`);
     setMessage("");
   }
 
@@ -58,12 +79,18 @@ export default function App() {
 
   async function handleSendAnyway() {
     setNudgeVisible(false);
-    await finalizeSend(pendingLabel, pendingScore);
+    await finalizeSend(
+      pendingLabel,
+      pendingScore,
+      pendingDevelopmentNotice,
+      pendingClassificationMetadata
+    );
   }
 
   function handleEditInstead() {
     setNudgeVisible(false);
-    addToHistory(`Held for edit — risk: ${pendingLabel} (${pendingScore.toFixed(2)})`);
+    const prefix = pendingDevelopmentNotice ? `${pendingDevelopmentNotice} — ` : "";
+    addToHistory(`${prefix}Held for edit — risk: ${pendingLabel} (${pendingScore.toFixed(2)})`);
     // Message text stays in the input box so the sender can revise it.
   }
 
@@ -71,6 +98,9 @@ export default function App() {
     <SafeAreaView style={styles.container}>
       <Text style={styles.title}>ChildSafeLens</Text>
       <Text style={styles.subtitle}>Demo — type a message and hit Send</Text>
+      {classificationNotice && (
+        <Text style={styles.developmentNotice}>{classificationNotice}</Text>
+      )}
 
       <TextInput
         style={styles.input}
@@ -105,6 +135,9 @@ export default function App() {
               This message might come across as harmful. Want to reconsider
               before sending it?
             </Text>
+            {pendingDevelopmentNotice && (
+              <Text style={styles.developmentNotice}>{pendingDevelopmentNotice}</Text>
+            )}
 
             <TouchableOpacity style={styles.modalButtonPrimary} onPress={handleEditInstead}>
               <Text style={styles.modalButtonPrimaryText}>Edit message</Text>
@@ -124,6 +157,15 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F7F8FA", padding: 20 },
   title: { fontSize: 26, fontWeight: "700", color: "#1A1A2E", marginTop: 12 },
   subtitle: { fontSize: 14, color: "#6B7280", marginBottom: 20 },
+  developmentNotice: {
+    color: "#92400E",
+    backgroundColor: "#FEF3C7",
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 12,
+    fontSize: 12,
+    fontWeight: "600",
+  },
   input: {
     minHeight: 90,
     backgroundColor: "#FFFFFF",

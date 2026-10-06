@@ -1,13 +1,11 @@
 package com.childsafelens.demo.ui.chat
 
-import android.app.AlertDialog
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
-import android.widget.ProgressBar
 import androidx.appcompat.widget.Toolbar
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
@@ -25,7 +23,6 @@ class ChatFragment : Fragment() {
     private lateinit var etMessageInput: EditText
     private lateinit var rvChat: RecyclerView
     private lateinit var adapter: ChatAdapter
-    private var waitingDialog: AlertDialog? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -62,7 +59,7 @@ class ChatFragment : Fragment() {
         }
 
         // Setup RecyclerView
-        adapter = ChatAdapter(viewModel)
+        adapter = ChatAdapter()
         rvChat.layoutManager = LinearLayoutManager(context).apply {
             stackFromEnd = true
         }
@@ -74,26 +71,6 @@ class ChatFragment : Fragment() {
                 if (messageList.isNotEmpty()) {
                     rvChat.scrollToPosition(messageList.size - 1)
                 }
-            }
-        }
-
-        // Observe Pending Approval State (Pure Spinner Buffer Sign with NO text)
-        viewModel.pendingApprovalState.observe(viewLifecycleOwner) { isPending ->
-            if (isPending) {
-                if (waitingDialog == null) {
-                    val progressBar = ProgressBar(requireContext()).apply {
-                        isIndeterminate = true
-                        setPadding(50, 50, 50, 50)
-                    }
-                    waitingDialog = AlertDialog.Builder(requireContext())
-                        .setView(progressBar)
-                        .setCancelable(false)
-                        .create()
-                }
-                waitingDialog?.show()
-            } else {
-                waitingDialog?.dismiss()
-                waitingDialog = null
             }
         }
 
@@ -121,9 +98,4 @@ class ChatFragment : Fragment() {
         }
     }
 
-    override fun onDestroyView() {
-        super.onDestroyView()
-        waitingDialog?.dismiss()
-        waitingDialog = null
-    }
 }

@@ -1,13 +1,11 @@
 package com.childsafelens.demo.ui.chat
 
-import android.app.AlertDialog
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
-import android.widget.ProgressBar
 import androidx.appcompat.widget.Toolbar
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
@@ -29,7 +27,6 @@ class DualChatFragment : Fragment() {
     
     private lateinit var adapterChild: ChatAdapter
     private lateinit var adapterContact: ChatAdapter
-    private var waitingDialog: AlertDialog? = null
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
@@ -50,8 +47,8 @@ class DualChatFragment : Fragment() {
         etContactInput = view.findViewById(R.id.etContactInput)
 
         // Setup Adapters
-        adapterChild = ChatAdapter(viewModel = null, simulatorViewModel = viewModel, isChildPerspective = true)
-        adapterContact = ChatAdapter(viewModel = null, simulatorViewModel = viewModel, isChildPerspective = false)
+        adapterChild = ChatAdapter(isChildPerspective = true)
+        adapterContact = ChatAdapter(isChildPerspective = false)
 
         rvChild.layoutManager = LinearLayoutManager(context).apply { stackFromEnd = true }
         rvContact.layoutManager = LinearLayoutManager(context).apply { stackFromEnd = true }
@@ -68,26 +65,6 @@ class DualChatFragment : Fragment() {
             val visibleToList = list.filter { it.visibleToReceiver || it.sender == Sender.SIMULATED_CONTACT }
             adapterContact.submitList(visibleToList) {
                 if (visibleToList.isNotEmpty()) rvContact.scrollToPosition(visibleToList.size - 1)
-            }
-        }
-
-        // Observe Pending Approval State (Pure Spinner Buffer Sign with NO text)
-        viewModel.pendingApprovalState.observe(viewLifecycleOwner) { isPending ->
-            if (isPending) {
-                if (waitingDialog == null) {
-                    val progressBar = ProgressBar(requireContext()).apply {
-                        isIndeterminate = true
-                        setPadding(50, 50, 50, 50)
-                    }
-                    waitingDialog = AlertDialog.Builder(requireContext())
-                        .setView(progressBar)
-                        .setCancelable(false)
-                        .create()
-                }
-                waitingDialog?.show()
-            } else {
-                waitingDialog?.dismiss()
-                waitingDialog = null
             }
         }
 
@@ -109,9 +86,4 @@ class DualChatFragment : Fragment() {
         }
     }
 
-    override fun onDestroyView() {
-        super.onDestroyView()
-        waitingDialog?.dismiss()
-        waitingDialog = null
-    }
 }

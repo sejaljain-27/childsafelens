@@ -20,16 +20,18 @@ there's nothing else to install.
 
 ## 2. Point it at the backend
 
-Open `api.js` and set:
+Set `EXPO_PUBLIC_API_BASE_URL` when the backend is not reachable through the
+local defaults:
 
 ```js
-export const API_BASE_URL = "https://<the-url-C-gives-you>.onrender.com";
+EXPO_PUBLIC_API_BASE_URL=https://<your-backend-host>
 ```
 
-While C's backend isn't deployed yet, you can test against it running
-locally on a laptop on the same wifi network — use the laptop's LAN IP
-(e.g. `http://192.168.1.23:8000`), not `localhost` (a phone's `localhost`
-means the phone itself, not your laptop).
+On web, the app connects to the backend at the same hostname on port 8000.
+On an Android emulator, it connects through `http://10.0.2.2:8000`. For a
+physical phone, set `EXPO_PUBLIC_API_BASE_URL` to the laptop's LAN URL
+(for example `http://192.168.1.23:8000`); do not use `localhost` on the
+phone because that points to the phone itself.
 
 ## 3. Run it
 

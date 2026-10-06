@@ -14,6 +14,11 @@ import {
 
 import { HeroSection } from '../components/ui/hero-section-with-smooth-bg-shader';
 import { useRouter } from 'expo-router';
+import {
+  loginParent,
+  registerParent,
+  storeParentSession,
+} from '../services/alertsService';
 
 const LoginScreen: React.FC = () => {
   const router = useRouter();
@@ -21,14 +26,16 @@ const LoginScreen: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleAuth = () => {
-    console.log('Login button pressed. isSignup:', isSignup);
+  const handleAuth = async () => {
     if (isSignup) {
-      if (!fullName || !email || !password || !confirmPassword) {
+      if (!fullName || !email || !password) {
         Alert.alert('Validation Error', 'Please fill in all fields');
+        return;
+      }
+      if (password.length < 6) {
+        Alert.alert('Validation Error', 'Password must be at least 6 characters');
         return;
       }
     } else {
@@ -40,28 +47,19 @@ const LoginScreen: React.FC = () => {
 
     setIsLoading(true);
     try {
-      setTimeout(() => {
-        setIsLoading(false);
-        if (isSignup) {
-          console.log('Signup successful, switching to Login mode');
-          setIsSignup(false);
-          Alert.alert('Success', 'Account created successfully! Please sign in.');
-        } else {
-          console.log('Login successful, navigating to dashboard for:', email);
-          const cleanEmail = email.trim().toLowerCase() || 'parent@test.com';
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('childsafelens_parent_email', cleanEmail);
-          }
-          router.replace({
-            pathname: '/dashboard',
-            params: { email: cleanEmail }
-          });
-        }
-      }, 500);
+      const account = isSignup
+        ? await registerParent({ email: email.trim().toLowerCase(), password, fullName: fullName.trim() })
+        : await loginParent({ email: email.trim().toLowerCase(), password });
+      storeParentSession(account);
+      router.replace({
+        pathname: '/dashboard',
+        params: { email: account.email }
+      });
     } catch (error) {
+      console.error('Parent account request failed:', error);
+      Alert.alert('Sign in failed', error instanceof Error ? error.message : 'Unable to verify this account.');
+    } finally {
       setIsLoading(false);
-      console.error('Auth error:', error);
-      Alert.alert('Error', String(error));
     }
   };
 
@@ -205,20 +203,6 @@ const LoginScreen: React.FC = () => {
             </View>
           </View>
 
-          {/* Skip Button */}
-          <TouchableOpacity 
-            activeOpacity={0.7}
-            style={styles.demoButton}
-            onPress={() => {
-              const cleanEmail = 'parent@test.com';
-              if (typeof window !== 'undefined') {
-                localStorage.setItem('childsafelens_parent_email', cleanEmail);
-              }
-              router.replace({ pathname: '/dashboard', params: { email: cleanEmail } });
-            }}
-          >
-            <Text style={styles.demoButtonText}>Skip to Dashboard →</Text>
-          </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
     </HeroSection>

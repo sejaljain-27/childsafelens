@@ -12,13 +12,13 @@ class ChildSafeLensApp : Application() {
         // Initialize event logger
         EventLogger.init(this)
 
-        // Initialize ML inference engine
-        Inference.init(this)
-
         // Initialize word masker engine
         Masker.init(this)
 
         // Initialize incident manager
         IncidentManager.init(this)
+
+        // Initialize backend classification and offline rechecks
+        BackendClassifierClient.initialize(this)
     }
 }

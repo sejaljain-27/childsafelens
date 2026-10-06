@@ -16,33 +16,70 @@ Provides endpoints for:
 
 import uuid
 import os
+import secrets
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import time
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from model import score_text
+from model import predict_text
+from classifier_service import CASCADE_MODEL_VERSION, ModelUnavailableError
+from account_store import account_store
 from notification_service import notification_service, NotificationPreferences
+from research_risk import (
+    INCIDENT_SCORE_COMPONENTS,
+    SOCIAL_GRAPH_FEATURES,
+    SEVERITY_CATEGORIES,
+    TARGETING_FEATURES,
+    analytics_summary,
+    capability_status,
+    child_risk_assessment,
+    configured_weights,
+    current_incident_score,
+    severity_evidence,
+    social_graph,
+    targeting_evidence,
+)
 
 app = FastAPI(title="ChildSafeLens Demo API")
+_logger = logging.getLogger(__name__)
+_classification_debug = os.environ.get("CHILDSAFELENS_CLASSIFIER_DEBUG") == "1"
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        origin.strip()
+        for origin in os.environ.get(
+            "CHILDSAFELENS_ALLOWED_ORIGINS",
+            "http://localhost:8081,http://127.0.0.1:8081,"
+            "http://localhost:8082,http://127.0.0.1:8082",
+        ).split(",")
+        if origin.strip()
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-_events = []
-_incidents = {} # incident_id -> incident dict
-_parent_settings = {
+_events = account_store.list_risk_events()
+_incidents = {
+    incident["incidentId"]: incident
+    for incident in account_store.list_incidents()
+}
+_default_parent_settings = {
     "medium_risk_timeout_action": "ALLOW",
     "high_risk_timeout_action": "BLOCK",
     "critical_risk_timeout_action": "KEEP_PENDING",
     "timeout_seconds": 60
 }
+_parent_settings: dict[str, dict] = {}
 
 RiskLevel = Literal["low_risk", "medium_risk", "high_risk"]
 
@@ -51,15 +88,146 @@ class PredictRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000)
 
 
+class ParentAuthRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=320)
+    password: str = Field(..., min_length=1, max_length=256)
+    fullName: str = Field(default="", max_length=120)
+
+
+def _auth_secret() -> bytes:
+    secret = os.environ.get("CHILDSAFELENS_AUTH_SECRET", "")
+    if len(secret.encode("utf-8")) < 32:
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication is not configured on this server.",
+        )
+    return secret.encode("utf-8")
+
+
+def _base64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _issue_access_token(email: str) -> dict[str, str | int]:
+    now = int(time.time())
+    try:
+        lifetime = int(os.environ.get("CHILDSAFELENS_AUTH_TOKEN_TTL_SECONDS", "43200"))
+    except ValueError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication token lifetime is misconfigured.",
+        ) from error
+    if not 60 <= lifetime <= 604800:
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication token lifetime is misconfigured.",
+        )
+    payload = _base64url(
+        json.dumps(
+            {"sub": account_store.normalize_email(email), "iat": now, "exp": now + lifetime},
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    signature = _base64url(
+        hmac.new(_auth_secret(), payload.encode("ascii"), hashlib.sha256).digest()
+    )
+    return {
+        "access_token": f"{payload}.{signature}",
+        "token_type": "Bearer",
+        "expires_at": now + lifetime,
+    }
+
+
+def require_parent(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="A valid bearer token is required.")
+    try:
+        payload, signature = authorization[7:].split(".", 1)
+        expected = _base64url(
+            hmac.new(_auth_secret(), payload.encode("ascii"), hashlib.sha256).digest()
+        )
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("Invalid token signature.")
+        decoded = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        claims = json.loads(decoded)
+        email = claims["sub"]
+        expires_at = claims["exp"]
+        if (
+            not isinstance(email, str)
+            or not email
+            or not isinstance(expires_at, int)
+            or expires_at <= int(time.time())
+            or not account_store.has_account(email)
+        ):
+            raise ValueError("Invalid or expired token.")
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise HTTPException(status_code=401, detail="Invalid or expired bearer token.") from error
+    return account_store.normalize_email(email)
+
+
+def _assert_parent_scope(requested_email: str | None, authenticated_email: str) -> str:
+    if requested_email and account_store.normalize_email(requested_email) != authenticated_email:
+        raise HTTPException(status_code=403, detail="The requested parent account does not match the authenticated account.")
+    return authenticated_email
+
+
+def _require_incident_owner(incident_id: str, authenticated_email: str) -> dict:
+    incident = _incidents.get(incident_id)
+    if (
+        incident is None
+        or account_store.normalize_email(incident.get("parentEmail", ""))
+        != authenticated_email
+    ):
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return incident
+
+
+class ChildProfileRequest(BaseModel):
+    parentEmail: str = Field(..., min_length=3, max_length=320)
+    childName: str = Field(..., min_length=1, max_length=120)
+
+
 class PredictResponse(BaseModel):
+    classification: Literal["CLEAN", "CYBERBULLYING"] = "CLEAN"
+    model_classification: Literal["Bullying", "Clean"] | None = None
+    decision_override: str | None = None
+    cyberbullying: bool = False
+    p_bullying: float | None = None
+    gate_threshold: float | None = None
+    categories: list[dict[str, str | float]] = Field(default_factory=list)
+    incident_created: bool = False
+    classification_status: str = "MODEL_LOADED"
     risk_score: float
     is_risky: bool
     label: RiskLevel
+    stage1_label: Literal["Bullying", "Clean"] | None
+    stage1_status: str
+    classification_label: Literal["Bullying", "Clean"] | None
+    classification_confidence: float | None
+    model_status: Literal["dummy", "real", "model_not_configured"]
+    model_version: str
+    development_simulation: bool
+    classification_notice: str
+    category: str | None
+    category_status: str
+    stage: str
+    model_name: str | None = None
+    timestamp: str | None = None
+    modality: str = "text"
+    processing_status: str | None = None
 
 
 class LogEventRequest(BaseModel):
     risk_level: RiskLevel
     timestamp: str | None = None
+    model_status: Literal["dummy", "real"] | None = None
+    model_version: str | None = None
+    development_simulation: bool | None = None
+    model_name: str | None = None
+    modality: Literal["text", "image", "audio", "video"] = "text"
+    processing_status: str | None = None
 
 
 class IncidentCreate(BaseModel):
@@ -69,12 +237,31 @@ class IncidentCreate(BaseModel):
     childName: str = "Aarav"
     type: str
     messageSnippet: str
+    messageText: str | None = Field(default=None, min_length=1, max_length=2000)
     riskScore: float
     riskLevel: str
     category: str
     packageName: str
     timestamp: int
     status: str = "PENDING_PARENT_REVIEW"
+    senderId: str | None = None
+    childUsername: str | None = None
+    replyToChild: bool | None = None
+    personalReference: bool | None = None
+    severityIndicators: list[
+        Literal["insult", "harassment", "humiliation", "threat", "blackmail", "physical_harm"]
+    ] = Field(default_factory=list)
+    contentType: Literal["text", "image", "audio", "video"] | None = None
+    evidenceReference: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+
+
+class MediaAnalysisRequest(BaseModel):
+    media_reference: str = Field(..., min_length=1, max_length=2048)
 
 
 class DecisionRequest(BaseModel):
@@ -95,25 +282,205 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/auth/register", status_code=201)
+def register_parent(req: ParentAuthRequest):
+    _auth_secret()
+    if "@" not in req.email:
+        raise HTTPException(status_code=422, detail="A valid email is required.")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=422, detail="Password must be at least 6 characters.")
+    if not account_store.create_account(req.email, req.password, req.fullName):
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+    return {
+        "status": "ok",
+        "email": account_store.normalize_email(req.email),
+        **_issue_access_token(req.email),
+    }
+
+
+@app.post("/auth/login")
+def login_parent(req: ParentAuthRequest):
+    if not account_store.verify_credentials(req.email, req.password):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    return {
+        "status": "ok",
+        "email": account_store.normalize_email(req.email),
+        **_issue_access_token(req.email),
+    }
+
+
+@app.get("/children/profiles")
+def get_child_profiles(
+    parentEmail: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    return [
+        {
+            "childId": profile["child_id"],
+            "parentEmail": profile["parent_email"],
+            "childName": profile["child_name"],
+        }
+        for profile in account_store.list_child_profiles(owner_email)
+    ]
+
+
+@app.post("/children/profiles", status_code=201)
+def create_child_profile(
+    req: ChildProfileRequest,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(req.parentEmail, authenticated_email)
+    profile = account_store.add_child_profile(owner_email, req.childName)
+    return {
+        "childId": profile["child_id"],
+        "parentEmail": profile["parent_email"],
+        "childName": profile["child_name"],
+    }
+
+
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
-    risk_score, label, is_risky = score_text(req.text)
-    return PredictResponse(risk_score=round(risk_score, 4), is_risky=is_risky, label=label)
+    try:
+        result = predict_text(req.text)
+    except ModelUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "classification_status": "MODEL_UNAVAILABLE",
+                "message": "The supplied cyberbullying model is unavailable.",
+            },
+        ) from error
+    timestamp = datetime.now(timezone.utc).isoformat()
+    classifier_info = capability_status()["classifier"]
+    processing_status = (
+        "completed"
+        if result["model_status"] == "real"
+        else "development_simulation"
+        if result["model_status"] == "dummy"
+        else "unavailable"
+    )
+    return PredictResponse(
+        classification=result.get(
+            "classification",
+            "CYBERBULLYING" if result.get("is_risky") else "CLEAN",
+        ),
+        model_classification=result.get("model_classification", result.get("classification_label")),
+        decision_override=result.get("decision_override"),
+        cyberbullying=result.get("cyberbullying", result["is_risky"]),
+        p_bullying=result.get("p_bullying", result["risk_score"]),
+        gate_threshold=result.get("gate_threshold"),
+        categories=result.get("categories", []),
+        incident_created=False,
+        risk_score=round(result["risk_score"], 4),
+        is_risky=result["is_risky"],
+        label=result["label"],
+        stage1_label=result["stage1_label"],
+        stage1_status=result["stage1_status"],
+        classification_label=result["classification_label"],
+        classification_confidence=result["classification_confidence"],
+        model_status=result["model_status"],
+        model_version=result["model_version"],
+        development_simulation=result["development_simulation"],
+        classification_notice=result["classification_notice"],
+        category=result["category"],
+        category_status=result["category_status"],
+        stage=result["stage"],
+        model_name=classifier_info.get("name"),
+        timestamp=timestamp,
+        modality="text",
+        processing_status=processing_status,
+    )
 
 
 @app.post("/log-event")
 def log_event(req: LogEventRequest):
     timestamp = req.timestamp or datetime.now(timezone.utc).isoformat()
     event_id = f"evt_{uuid.uuid4().hex[:8]}"
-    _events.append({"event_id": event_id, "risk_level": req.risk_level, "timestamp": timestamp})
+    event = {
+            "event_id": event_id,
+            "risk_level": req.risk_level,
+            "timestamp": timestamp,
+            "model_status": req.model_status,
+            "model_version": req.model_version,
+            "development_simulation": req.development_simulation,
+            "model_name": req.model_name,
+            "modality": req.modality,
+            "processing_status": req.processing_status or req.model_status,
+        }
+    account_store.save_risk_event(event)
+    _events.append(event)
     return {"status": "ok", "event_id": event_id}
 
 
+def _save_incident(incident: dict) -> None:
+    incident["parentAction"] = incident.get("parentDecision")
+    try:
+        account_store.save_incident(incident)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    _incidents[incident["incidentId"]] = incident
+
+
+def _persist_risk_snapshot(
+    incidents: list[dict],
+    assessment: dict,
+    assessed_at: datetime | None = None,
+) -> None:
+    if not incidents:
+        return
+    latest = max(incidents, key=lambda item: int(item["timestamp"]))
+    components = assessment["components"]
+    risk_fusion = assessment["risk_fusion"]
+    explanation = risk_fusion["explanation"]
+    snapshot_time = (assessed_at or datetime.now(timezone.utc)).isoformat()
+    snapshot = dict(latest)
+    snapshot.update(
+        {
+            "temporalRisk": components["temporal"].get("value"),
+            "escalationScore": components["escalation"].get("value"),
+            "socialGraphRisk": assessment["social_graph"].get("graph_score"),
+            "historicalRisk": components["historical"].get("value"),
+            "CRS": assessment.get("crs"),
+            "riskState": assessment.get("risk_state"),
+            "riskAssessmentStatus": assessment.get("status"),
+            "riskAssessmentTimestamp": snapshot_time,
+            "riskFusionOutput": {
+                "status": risk_fusion.get("status"),
+                "value": risk_fusion.get("score"),
+                "modelName": "XGBoost child-risk fusion",
+                "modelVersion": risk_fusion.get("model_version"),
+                "timestamp": snapshot_time,
+                "modality": "contextual_risk",
+                "processingStatus": risk_fusion.get("status"),
+            },
+            "shapExplanation": {
+                **explanation,
+                "timestamp": snapshot_time,
+                "modality": "contextual_risk",
+                "modelVersion": risk_fusion.get("model_version"),
+            },
+            "modelVersions": {
+                **snapshot.get("modelVersions", {}),
+                "risk_fusion": risk_fusion.get("model_version"),
+            },
+        }
+    )
+    _save_incident(snapshot)
+
+
 @app.get("/events")
-def get_events(parentEmail: str | None = None, childName: str | None = None):
-    incidents = list(_incidents.values())
-    if parentEmail:
-        incidents = [i for i in incidents if i.get("parentEmail", "").lower() == parentEmail.lower()]
+def get_events(
+    parentEmail: str | None = None,
+    childName: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    incidents = [
+        incident
+        for incident in _incidents.values()
+        if account_store.normalize_email(incident.get("parentEmail", "")) == owner_email
+    ]
     if childName:
         incidents = [i for i in incidents if i.get("childName", "").lower() == childName.lower()]
 
@@ -123,82 +490,519 @@ def get_events(parentEmail: str | None = None, childName: str | None = None):
     return {"total_events": len(incidents), "high_risk_count": high, "medium_risk_count": medium, "low_risk_count": low}
 
 
+@app.get("/analytics")
+def get_analytics(
+    parentEmail: str | None = None,
+    childName: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    incidents = [
+        incident
+        for incident in _incidents.values()
+        if account_store.normalize_email(incident.get("parentEmail", "")) == owner_email
+    ]
+    if childName:
+        incidents = [
+            incident
+            for incident in incidents
+            if incident.get("childName", "").lower() == childName.lower()
+        ]
+    return analytics_summary(incidents)
+
+
 @app.post("/incidents")
-def create_incident(inc: IncidentCreate):
+def create_incident(
+    inc: IncidentCreate,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(inc.parentEmail, authenticated_email)
+    classification_text = inc.messageText or inc.messageSnippet
+    try:
+        prediction = predict_text(classification_text)
+    except ModelUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "classification_status": "MODEL_UNAVAILABLE",
+                "message": "The supplied cyberbullying model is unavailable.",
+            },
+        ) from error
+    if (
+        prediction["model_status"] != "real"
+        or prediction["model_version"] != CASCADE_MODEL_VERSION
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Incident verification requires the supplied cyberbullying cascade model.",
+        )
+    if prediction["classification_label"] != "Bullying":
+        if _classification_debug:
+            _logger.info(
+                "Cascade incident decision model=%s p_bullying=%.6f "
+                "gate_threshold=%.6f classification=CLEAN incident_created=false",
+                prediction["model_version"],
+                prediction["risk_score"],
+                prediction.get("gate_threshold", 0.0),
+            )
+        raise HTTPException(
+            status_code=422,
+            detail="Message classified as Clean; incident was not created.",
+        )
+
+    child_name = inc.childName if "childName" in inc.model_fields_set else None
+    targeting = targeting_evidence(
+        classification_text,
+        child_name=child_name,
+        child_username=inc.childUsername,
+        reply_to_child=inc.replyToChild,
+        personal_reference=inc.personalReference,
+        weights=configured_weights("targeting", TARGETING_FEATURES),
+    )
+    severity = severity_evidence(
+        inc.severityIndicators,
+        weights=configured_weights("severity", SEVERITY_CATEGORIES),
+        evidence_provided="severityIndicators" in inc.model_fields_set,
+        text=classification_text,
+    )
+    incident_score = current_incident_score(
+        classifier_probability=prediction.get("risk_score"),
+        targeting_score=targeting.get("score"),
+        severity_score=severity.get("score"),
+        multimodal_score=None,
+        weights=configured_weights("incident", INCIDENT_SCORE_COMPONENTS),
+    )
+    classification_timestamp = datetime.now(timezone.utc).isoformat()
+    capabilities = capability_status()
+    classifier_info = capabilities["classifier"]
+    classifier_output = {
+        "modelName": classifier_info.get("name", "Cyberbullying classifier"),
+        "modelVersion": prediction.get("model_version"),
+        "timestamp": classification_timestamp,
+        "modality": "text",
+        "sourceModality": inc.contentType or "text",
+        "processingStatus": (
+            "completed"
+            if prediction.get("model_status") == "real"
+            else "development_simulation"
+            if prediction.get("model_status") == "dummy"
+            else "unavailable"
+        ),
+        "output": {
+            "label": prediction.get("classification_label"),
+            "probability": prediction.get("risk_score"),
+            "confidence": prediction.get("classification_confidence"),
+            "category": prediction.get("category"),
+            "categories": prediction.get("categories", []),
+        },
+    }
+    media_modality = inc.contentType or "text"
+    multimodal_status = (
+        capabilities["multimodal"].get(media_modality, {}).get("status")
+        if media_modality != "text"
+        else "not_required"
+    )
+    ai_results = [classifier_output]
+    if media_modality != "text":
+        provider = capabilities["multimodal"].get(media_modality, {})
+        ai_results.append(
+            {
+                "modelName": provider.get("provider"),
+                "modelVersion": None,
+                "timestamp": classification_timestamp,
+                "modality": media_modality,
+                "processingStatus": multimodal_status,
+                "output": None,
+            }
+        )
     incident_data = {
         "incidentId": inc.incidentId,
-        "parentEmail": inc.parentEmail,
+        "parentEmail": owner_email,
         "childId": inc.childId,
         "childName": inc.childName,
         "type": inc.type,
-        "messageSnippet": inc.messageSnippet,
-        "riskScore": inc.riskScore,
-        "riskLevel": inc.riskLevel,
-        "category": inc.category,
+        "messageSnippet": inc.messageSnippet[:280],
+        "riskScore": prediction["risk_score"],
+        "riskLevel": prediction["label"],
+        "category": prediction.get("category"),
         "packageName": inc.packageName,
         "timestamp": inc.timestamp,
-        "status": inc.status,
+        "status": "PENDING_PARENT_REVIEW",
         "parentDecision": None,
+        "parentAction": None,
         "guidance": None,
-        "editedContent": None
+        "editedContent": None,
+        "senderId": inc.senderId,
+        "contentType": inc.contentType,
+        "evidenceReference": inc.evidenceReference,
+        "classifierOutput": classifier_output,
+        "aiResults": ai_results,
+        "multimodalAnalysis": {
+            "modelName": (
+                capabilities["multimodal"].get(media_modality, {}).get("provider")
+                if media_modality != "text"
+                else None
+            ),
+            "modelVersion": None,
+            "timestamp": classification_timestamp,
+            "modality": media_modality,
+            "processingStatus": multimodal_status,
+            "evidenceReference": inc.evidenceReference,
+            "score": None,
+            "caption": None,
+        },
+        "targeting_evidence": targeting,
+        "targetingScore": targeting.get("score"),
+        "targeting_score": targeting.get("score"),
+        "severity_evidence": severity,
+        "severityScore": severity.get("score"),
+        "multimodalScore": None,
+        "incidentScore": incident_score["score"],
+        "incident_score": incident_score["score"],
+        "incident_score_status": incident_score["status"],
+        "incident_score_components": incident_score["components"],
+        "incident_score_missing_components": incident_score["missing_components"],
+        "incident_score_weights": incident_score["weights"],
+        "incident_score_weight_status": incident_score["weight_status"],
+        "temporalRisk": None,
+        "escalationScore": None,
+        "socialGraphRisk": None,
+        "historicalRisk": None,
+        "CRS": None,
+        "riskState": "Not available",
+        "shapExplanation": {
+            "status": "unavailable",
+            "message": "Explanation unavailable",
+            "feature_contributions": None,
+            "timestamp": classification_timestamp,
+            "modality": "contextual_risk",
+            "modelVersion": None,
+        },
+        "modelVersion": prediction.get("model_version"),
+        "modelVersions": {"classifier": prediction.get("model_version")},
     }
-    _incidents[inc.incidentId] = incident_data
+    _save_incident(incident_data)
+    if _classification_debug:
+        _logger.info(
+            "Cascade incident decision model=%s p_bullying=%.6f "
+            "gate_threshold=%.6f classification=CYBERBULLYING "
+            "incident_created=true categories=%s",
+            prediction["model_version"],
+            prediction["risk_score"],
+            prediction.get("gate_threshold", 0.0),
+            prediction.get("categories", []),
+        )
 
     # Asynchronously dispatch notifications without blocking incident creation
     import threading
     threading.Thread(target=notification_service.notify_parent, args=(incident_data,)).start()
 
-    return {"status": "ok", "incidentId": inc.incidentId}
+    return {
+        "status": "ok",
+        "incidentId": inc.incidentId,
+        "classification": "CYBERBULLYING",
+        "incident_created": True,
+        "p_bullying": prediction["risk_score"],
+        "gate_threshold": prediction.get("gate_threshold"),
+        "categories": prediction.get("categories", []),
+    }
 
 
 @app.get("/incidents")
-def get_incidents(parentEmail: str | None = None, childName: str | None = None):
-    results = list(_incidents.values())
-    if parentEmail:
-        results = [i for i in results if i.get("parentEmail", "").lower() == parentEmail.lower()]
+def get_incidents(
+    parentEmail: str | None = None,
+    childName: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    results = [
+        incident
+        for incident in _incidents.values()
+        if account_store.normalize_email(incident.get("parentEmail", "")) == owner_email
+    ]
     if childName:
         results = [i for i in results if i.get("childName", "").lower() == childName.lower()]
     return results
 
 
+def _child_incidents(
+    parent_email: str,
+    child_id: str | None = None,
+    child_name: str | None = None,
+) -> list[dict]:
+    normalized_parent = account_store.normalize_email(parent_email)
+    results = [
+        incident
+        for incident in _incidents.values()
+        if account_store.normalize_email(incident.get("parentEmail", ""))
+        == normalized_parent
+    ]
+    if child_id:
+        results = [incident for incident in results if incident.get("childId") == child_id]
+    if child_name:
+        results = [
+            incident
+            for incident in results
+            if incident.get("childName", "").lower() == child_name.lower()
+        ]
+    return results
+
+
+@app.get("/research/status")
+def get_research_status():
+    return capability_status()
+
+
+def _media_analysis_unavailable(modality: str, media_reference: str) -> None:
+    if not media_reference.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="A non-empty media_reference is required.",
+        )
+    modality_status = capability_status()["multimodal"][modality]
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "status": "unavailable",
+            "processing_status": f"{modality}_analysis_unavailable",
+            "provider_status": modality_status["status"],
+            "provider": modality_status.get("provider"),
+            "message": f"{modality.capitalize()} analysis is unavailable; no result was produced.",
+        },
+    )
+
+
+@app.post("/analyze/audio")
+def analyze_audio(req: MediaAnalysisRequest):
+    _media_analysis_unavailable("audio", req.media_reference)
+
+
+@app.post("/analyze/image")
+def analyze_image(req: MediaAnalysisRequest):
+    _media_analysis_unavailable("image", req.media_reference)
+
+
+@app.post("/analyze/video")
+def analyze_video(req: MediaAnalysisRequest):
+    _media_analysis_unavailable("video", req.media_reference)
+
+
+@app.get("/children/risk")
+def get_child_risk_by_name(
+    parentEmail: str | None = None,
+    childName: str = "",
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    incidents = _child_incidents(owner_email, child_name=childName)
+    child_id = incidents[0]["childId"] if incidents else None
+    assessment = child_risk_assessment(incidents, child_id)
+    _persist_risk_snapshot(incidents, assessment)
+    return assessment
+
+
+@app.get("/children/{child_id}/risk")
+def get_child_risk(
+    child_id: str,
+    parentEmail: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    incidents = _child_incidents(owner_email, child_id=child_id)
+    assessment = child_risk_assessment(incidents, child_id)
+    _persist_risk_snapshot(incidents, assessment)
+    return assessment
+
+
+@app.get("/children/{child_id}/timeline")
+def get_child_timeline(
+    child_id: str,
+    parentEmail: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    incidents = _child_incidents(owner_email, child_id=child_id)
+    ordered_incidents = sorted(
+        incidents,
+        key=lambda incident: (
+            incident.get("timestamp")
+            if isinstance(incident.get("timestamp"), (int, float))
+            else float("-inf")
+        ),
+    )
+    timeline = []
+    for index, incident in enumerate(ordered_incidents):
+        timestamp = incident.get("timestamp")
+        try:
+            point_in_time = datetime.fromtimestamp(
+                float(timestamp) / 1000, timezone.utc
+            )
+        except (TypeError, ValueError, OSError):
+            point_in_time = None
+        assessment = child_risk_assessment(
+            ordered_incidents[: index + 1],
+            child_id,
+            point_in_time,
+        )
+        _persist_risk_snapshot(
+            ordered_incidents[: index + 1],
+            assessment,
+            point_in_time,
+        )
+        timeline.append(
+            {
+                "incident_id": incident["incidentId"],
+                "timestamp": timestamp,
+                "crs": assessment["crs"],
+                "risk_state": assessment["risk_state"],
+                "status": assessment["status"],
+            }
+        )
+    return {
+        "child_id": child_id,
+        "status": "available" if incidents else "no_history",
+        "storage": "sqlite",
+        "timeline": timeline,
+    }
+
+
+@app.get("/children/{child_id}/social-graph")
+def get_child_social_graph(
+    child_id: str,
+    parentEmail: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    incidents = _child_incidents(owner_email, child_id=child_id)
+    return {
+        "child_id": child_id,
+        **social_graph(
+            incidents,
+            child_id,
+            weights=configured_weights("graph", SOCIAL_GRAPH_FEATURES),
+        ),
+    }
+
+
+@app.get("/incidents/{incident_id}/explanation")
+def get_incident_explanation(
+    incident_id: str,
+    parentEmail: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    incident = _require_incident_owner(incident_id, owner_email)
+    child_id = incident.get("childId")
+    incidents = _child_incidents(owner_email, child_id=child_id)
+    incidents.sort(
+        key=lambda item: (
+            item.get("timestamp")
+            if isinstance(item.get("timestamp"), (int, float))
+            else float("-inf")
+        )
+    )
+    incident_index = next(
+        (
+            index
+            for index, item in enumerate(incidents)
+            if item.get("incidentId") == incident_id
+        ),
+        None,
+    )
+    explanation = {
+        "status": "unavailable",
+        "message": "Explanation unavailable",
+        "feature_contributions": None,
+    }
+    if incident_index is not None:
+        try:
+            point_in_time = datetime.fromtimestamp(
+                float(incident.get("timestamp")) / 1000, timezone.utc
+            )
+        except (TypeError, ValueError, OSError):
+            point_in_time = None
+        assessment = child_risk_assessment(
+            incidents[: incident_index + 1],
+            child_id,
+            point_in_time,
+        )
+        _persist_risk_snapshot(
+            incidents[: incident_index + 1],
+            assessment,
+            point_in_time,
+        )
+        explanation = assessment["risk_fusion"]["explanation"]
+    contributions = explanation.get("feature_contributions")
+    return {
+        "incident_id": incident_id,
+        "status": explanation["status"],
+        "shap_values": contributions,
+        "contributors": contributions,
+        "base_value": explanation.get("base_value"),
+        "explained_output": explanation.get("explained_output"),
+        "model_output": explanation.get("model_output"),
+        "message": explanation["message"],
+        "parent_action": incident["parentDecision"],
+    }
+
+
 @app.get("/settings/notifications", response_model=NotificationPreferences)
-def get_notification_settings(parentEmail: str = "parent@test.com"):
-    return notification_service.get_preferences(parentEmail)
+def get_notification_settings(
+    parentEmail: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    return notification_service.get_preferences(
+        _assert_parent_scope(parentEmail, authenticated_email)
+    )
 
 
 @app.post("/settings/notifications", response_model=NotificationPreferences)
-def update_notification_settings(prefs: NotificationPreferences):
+def update_notification_settings(
+    prefs: NotificationPreferences,
+    authenticated_email: str = Depends(require_parent),
+):
+    _assert_parent_scope(prefs.parentEmail, authenticated_email)
     return notification_service.update_preferences(prefs)
 
 
 @app.get("/notification-logs")
-def get_notification_logs(incidentId: str | None = None, parentEmail: str | None = None):
-    return notification_service.get_logs(incidentId, parentEmail)
+def get_notification_logs(
+    incidentId: str | None = None,
+    parentEmail: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    return notification_service.get_logs(incidentId, owner_email)
 
 
 # Specific Required Parent Endpoints
 @app.post("/parent/incidents/{incident_id}/block")
-def parent_block(incident_id: str):
-    if incident_id not in _incidents:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    inc = _incidents[incident_id]
+def parent_block(
+    incident_id: str,
+    authenticated_email: str = Depends(require_parent),
+):
+    inc = dict(_require_incident_owner(incident_id, authenticated_email))
     if inc["status"] != "PENDING_PARENT_REVIEW":
         return {"messageId": incident_id, "decision": "BLOCK", "status": inc["status"]}
 
     inc["parentDecision"] = "BLOCK"
     inc["status"] = "BLOCKED"
+    _save_incident(inc)
     return {"messageId": incident_id, "decision": "BLOCK", "status": "BLOCKED"}
 
 
 @app.post("/parent/incidents/{incident_id}/edit")
-def parent_edit(incident_id: str, req: DecisionRequest):
-    if incident_id not in _incidents:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    inc = _incidents[incident_id]
+def parent_edit(
+    incident_id: str,
+    req: DecisionRequest,
+    authenticated_email: str = Depends(require_parent),
+):
+    inc = dict(_require_incident_owner(incident_id, authenticated_email))
     inc["parentDecision"] = "EDIT"
     inc["guidance"] = req.guidance or "Please rephrase your message before sending."
     inc["editedContent"] = req.editedContent
     inc["status"] = "EDIT_REQUIRED"
+    _save_incident(inc)
     return {
         "messageId": incident_id,
         "decision": "EDIT",
@@ -209,32 +1013,44 @@ def parent_edit(incident_id: str, req: DecisionRequest):
 
 
 @app.post("/parent/incidents/{incident_id}/allow")
-def parent_allow(incident_id: str):
-    if incident_id not in _incidents:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    inc = _incidents[incident_id]
+def parent_allow(
+    incident_id: str,
+    authenticated_email: str = Depends(require_parent),
+):
+    inc = dict(_require_incident_owner(incident_id, authenticated_email))
     inc["parentDecision"] = "ALLOW"
     inc["status"] = "ALLOWED"
+    _save_incident(inc)
     return {"messageId": incident_id, "decision": "ALLOW", "status": "ALLOWED"}
 
 
 @app.get("/child/pending-decisions")
-def child_pending_decisions():
-    return [i for i in _incidents.values() if i["status"] in ["PENDING_PARENT_REVIEW", "EDIT_REQUIRED"]]
+def child_pending_decisions(authenticated_email: str = Depends(require_parent)):
+    return [
+        incident
+        for incident in _incidents.values()
+        if account_store.normalize_email(incident.get("parentEmail", "")) == authenticated_email
+        and incident["status"] in ["PENDING_PARENT_REVIEW", "EDIT_REQUIRED"]
+    ]
 
 
 @app.post("/child/messages/{message_id}/retry")
-def child_message_retry(message_id: str):
+def child_message_retry(
+    message_id: str,
+    authenticated_email: str = Depends(require_parent),
+):
+    _require_incident_owner(message_id, authenticated_email)
     return {"status": "ok", "messageId": message_id, "retried": True}
 
 
 # Generic decision fallback
 @app.post("/incidents/{incident_id}/decision")
-def submit_decision(incident_id: str, req: DecisionRequest):
-    if incident_id not in _incidents:
-        raise HTTPException(status_code=404, detail="Incident not found")
-
-    inc = _incidents[incident_id]
+def submit_decision(
+    incident_id: str,
+    req: DecisionRequest,
+    authenticated_email: str = Depends(require_parent),
+):
+    inc = dict(_require_incident_owner(incident_id, authenticated_email))
     inc["parentDecision"] = req.decision
     inc["guidance"] = req.guidance
     inc["editedContent"] = req.editedContent
@@ -244,14 +1060,16 @@ def submit_decision(incident_id: str, req: DecisionRequest):
         inc["status"] = "BLOCKED"
     else:
         inc["status"] = "EDIT_REQUIRED"
+    _save_incident(inc)
     return {"status": "ok", "incidentId": incident_id, "status_updated": inc["status"]}
 
 
 @app.get("/incidents/{incident_id}/decision")
-def get_decision(incident_id: str):
-    if incident_id not in _incidents:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    inc = _incidents[incident_id]
+def get_decision(
+    incident_id: str,
+    authenticated_email: str = Depends(require_parent),
+):
+    inc = _require_incident_owner(incident_id, authenticated_email)
     return {
         "incidentId": inc["incidentId"],
         "status": inc["status"],
@@ -262,15 +1080,18 @@ def get_decision(incident_id: str):
 
 
 @app.get("/settings", response_model=ParentSettings)
-def get_settings():
-    return ParentSettings(**_parent_settings)
+def get_settings(authenticated_email: str = Depends(require_parent)):
+    settings = _parent_settings.setdefault(authenticated_email, dict(_default_parent_settings))
+    return ParentSettings(**settings)
 
 
 @app.post("/settings")
-def update_settings(settings: ParentSettings):
-    global _parent_settings
-    _parent_settings = settings.dict()
-    return {"status": "ok", "settings": _parent_settings}
+def update_settings(
+    settings: ParentSettings,
+    authenticated_email: str = Depends(require_parent),
+):
+    _parent_settings[authenticated_email] = settings.model_dump()
+    return {"status": "ok", "settings": _parent_settings[authenticated_email]}
 
 
 class AlertRequest(BaseModel):
@@ -287,8 +1108,13 @@ class AlertRequest(BaseModel):
 
 @app.post("/alerts")
 def post_alert(req: AlertRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
-    expected_api_key = os.environ.get("API_KEY", "secret_child_safe_lens_key_2026")
-    if x_api_key != expected_api_key:
+    expected_api_key = os.environ.get("API_KEY")
+    if not expected_api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Alert delivery is not configured on this server.",
+        )
+    if not x_api_key or not secrets.compare_digest(x_api_key, expected_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
     package_map = {
@@ -326,8 +1152,13 @@ def post_alert(req: AlertRequest, x_api_key: str | None = Header(default=None, a
             </body>
             </html>
             """
-            notification_service.email_provider.send_email(req.parentEmail, subject, html_body)
-            success_count += 1
+            result = notification_service.email_provider.send_email(
+                req.parentEmail, subject, html_body
+            )
+            if result.get("status") == "SENT":
+                success_count += 1
+            else:
+                errors.append("Email failed: provider did not confirm delivery.")
         except Exception as e:
             errors.append(f"Email failed: {e}")
 
@@ -336,8 +1167,11 @@ def post_alert(req: AlertRequest, x_api_key: str | None = Header(default=None, a
             sms_text = f"ChildSafeLens Alert: {msg_text} Open Parent Dashboard to review."
             if len(sms_text) > 160:
                 sms_text = sms_text[:157] + "..."
-            notification_service.sms_provider.send_sms(req.parentPhone, sms_text)
-            success_count += 1
+            result = notification_service.sms_provider.send_sms(req.parentPhone, sms_text)
+            if result.get("status") == "SENT":
+                success_count += 1
+            else:
+                errors.append("SMS failed: provider did not confirm delivery.")
         except Exception as e:
             errors.append(f"SMS failed: {e}")
 
@@ -348,9 +1182,15 @@ def post_alert(req: AlertRequest, x_api_key: str | None = Header(default=None, a
 
 
 @app.delete("/events")
-def clear_events():
+def clear_events(x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+    expected_api_key = os.environ.get("API_KEY")
+    if not expected_api_key:
+        raise HTTPException(status_code=503, detail="Administrative clearing is not configured.")
+    if not x_api_key or not secrets.compare_digest(x_api_key, expected_api_key):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
     _events.clear()
     _incidents.clear()
+    account_store.clear_incidents_and_risk_events()
     return {"status": "cleared"}
 
 

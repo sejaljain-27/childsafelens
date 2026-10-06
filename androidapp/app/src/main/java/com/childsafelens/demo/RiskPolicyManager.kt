@@ -56,4 +56,14 @@ object RiskPolicyManager {
             )
         }
     }
+
+    fun evaluateForClassification(score: Float, label: String): PolicyEvaluation {
+        val policy = evaluate(score)
+        if (label != "Bullying" || policy.requiresParentApproval) return policy
+        return policy.copy(
+            requiresParentApproval = true,
+            timeoutMillis = 60_000L,
+            defaultTimeoutAction = TimeoutAction.KEEP_PENDING
+        )
+    }
 }

@@ -1,9 +1,10 @@
-# ChildSafeLens — Outgoing Nudge Demo (6-Day Build)
+# ChildSafeLens Android app
 
-This is the Android project for the first-review demo of the **outgoing nudge**
-feature: a live AccessibilityService that watches text as it's typed, scores it
-on-device, and blocks the child from sending a risky message with a full-screen
-overlay — matching Section 3.1 / 7.1 of the Full Implementation Plan (v2).
+The Android app sends message text to the ChildSafeLens backend's `/predict`
+endpoint. The backend runs the supplied `cyberbullying-cascade-v4` model; the
+app does not bundle or run a separate classifier model. Set
+`BackendApiConfig.BASE_URL` to a backend address reachable from the device
+(the default `10.0.2.2:8000` is for the Android emulator).
 
 ## How to open this project
 
@@ -24,17 +25,7 @@ overlay — matching Section 3.1 / 7.1 of the Full Implementation Plan (v2).
 | `NudgeAccessibilityService.kt` | **Person A** | Fully implemented — capture, debounce, overlay, threading, edge cases |
 | `OverlayManager.kt` | **Person A** | Fully implemented — the full-screen blocking window |
 | `MainActivity.kt` | **Person A** | Fully implemented — permission requests + demo input field |
-| `Inference.kt` | **Person B** | **STUB** — hardcoded keyword check. Replace `scoreText()` internals with the real ONNX Runtime Mobile call. Signature must not change. |
 | `EventLogger.kt` | **Person C** | **STUB** — logs to Logcat only. Replace `logNudgeEvent()` internals with real Room DB storage + wire up the debug viewer screen. Signature must not change. |
-
-The two function signatures below are the fixed interfaces from the plan —
-as long as they don't change, Person A's code never needs to be touched
-again once Person B and Person C plug in their real implementations:
-
-```kotlin
-fun scoreText(text: String): Float                     // Inference.kt
-fun logNudgeEvent(riskLevel: Float, timestamp: Long)    // EventLogger.kt
-```
 
 ## Required manual step after installing the app
 
@@ -52,9 +43,8 @@ The overlay also needs the "draw over other apps" permission, which
 ## Demo flow this code proves
 
 1. Type a neutral sentence in the demo input field → nothing happens.
-2. Type a flagged phrase (see `Inference.kt` stub list, e.g. contains
-   "stupid" or "idiot") → after a short debounce, a full-screen overlay
-   appears blocking the rest of the screen, with **Edit** / **Send anyway**.
+2. Type a message → the backend cascade classifies it; a trusted bullying
+   result follows the existing parent-review flow.
 3. Every time the overlay is triggered, an event is logged (see Logcat tag
    `EventLogger` until Person C's real storage lands).
 
@@ -64,5 +54,5 @@ The overlay also needs the "draw over other apps" permission, which
   app's own input field for now (see `accessibility_service_config.xml`).
 - Cloud sync, parent dashboard, push notifications.
 - Encrypted storage, auth/pairing.
-- Real ONNX model file and Room DB wiring — left as clearly marked stubs for
-  Person B and Person C to fill in per the interface contracts above.
+- Offline classifier inference — unavailable; backend classification is
+  required, and unverified offline results are not treated as model predictions.

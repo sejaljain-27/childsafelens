@@ -21,6 +21,7 @@ class SessionManager(context: Context) {
     companion object {
         private const val KEY_PARENT_EMAIL = "parent_email"
         private const val KEY_CHILD_DISPLAY_NAME = "child_display_name"
+        private const val KEY_ACCESS_TOKEN = "access_token"
     }
 
     fun loginParent(email: String) {
@@ -31,7 +32,16 @@ class SessionManager(context: Context) {
         sharedPreferences.edit()
             .remove(KEY_PARENT_EMAIL)
             .remove(KEY_CHILD_DISPLAY_NAME)
+            .remove(KEY_ACCESS_TOKEN)
             .apply()
+    }
+
+    fun setAccessToken(token: String) {
+        sharedPreferences.edit().putString(KEY_ACCESS_TOKEN, token).apply()
+    }
+
+    fun getAccessToken(): String? {
+        return sharedPreferences.getString(KEY_ACCESS_TOKEN, null)
     }
 
     fun getParentEmail(): String? {

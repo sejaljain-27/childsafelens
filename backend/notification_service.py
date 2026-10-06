@@ -28,38 +28,46 @@ class SmsProvider:
         self.from_number = os.environ.get("SMS_FROM_NUMBER", "")
 
     def send_sms(self, to_number: str, message: str) -> Dict[str, Any]:
-        logger.info(f"[SmsProvider] Sending SMS to {to_number}: {message}")
+        if (
+            not self.account_sid
+            or not self.auth_token
+            or not self.from_number
+            or self.account_sid.startswith("mock")
+        ):
+            raise RuntimeError("SMS provider is not configured.")
 
-        if self.account_sid and self.auth_token and self.from_number and not self.account_sid.startswith("mock"):
-            try:
-                url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
-                data = urllib.parse.urlencode({
-                    "To": to_number,
-                    "From": self.from_number,
-                    "Body": message
-                }).encode("utf-8")
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
+        data = urllib.parse.urlencode({
+            "To": to_number,
+            "From": self.from_number,
+            "Body": message
+        }).encode("utf-8")
 
-                credentials = f"{self.account_sid}:{self.auth_token}"
-                encoded_creds = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
+        credentials = f"{self.account_sid}:{self.auth_token}"
+        encoded_creds = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
 
-                req = urllib.request.Request(
-                    url,
-                    data=data,
-                    headers={
-                        "Authorization": f"Basic {encoded_creds}",
-                        "Content-Type": "application/x-www-form-urlencoded"
-                    },
-                    method="POST"
-                )
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Authorization": f"Basic {encoded_creds}",
+                "Content-Type": "application/x-www-form-urlencoded"
+            },
+            method="POST"
+        )
 
-                with urllib.request.urlopen(req) as response:
-                    res_data = response.read().decode("utf-8")
-                    logger.info(f"[SmsProvider] Twilio SMS sent successfully. Response: {res_data}")
-                    return {"status": "SENT", "providerMessageId": f"twilio_{datetime.now(timezone.utc).timestamp()}"}
-            except Exception as e:
-                logger.error(f"[SmsProvider] Twilio SMS failed: {e}. Falling back to mock log.")
+        try:
+            with urllib.request.urlopen(req) as response:
+                response.read()
+        except Exception as error:
+            logger.error(
+                "[SmsProvider] Twilio SMS failed (%s).",
+                type(error).__name__,
+            )
+            raise RuntimeError("SMS provider delivery failed.") from error
 
-        return {"status": "SENT", "providerMessageId": f"sms_{datetime.now(timezone.utc).timestamp()}"}
+        logger.info("[SmsProvider] Twilio SMS sent successfully.")
+        return {"status": "SENT", "providerMessageId": f"twilio_{datetime.now(timezone.utc).timestamp()}"}
 
 
 class EmailProvider:
@@ -71,25 +79,29 @@ class EmailProvider:
         self.from_address = os.environ.get("EMAIL_FROM_ADDRESS", self.smtp_user or "alerts@childsafelens.com")
 
     def send_email(self, to_email: str, subject: str, html_body: str) -> Dict[str, Any]:
-        logger.info(f"[EmailProvider] Sending Email to {to_email} | Subject: {subject}")
-        if self.smtp_user and self.smtp_password:
-            try:
-                msg = MIMEMultipart("alternative")
-                msg["Subject"] = subject
-                msg["From"] = self.from_address
-                msg["To"] = to_email
-                msg.attach(MIMEText(html_body, "html"))
+        if not self.smtp_user or not self.smtp_password:
+            raise RuntimeError("Email provider is not configured.")
 
-                with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                    server.starttls()
-                    server.login(self.smtp_user, self.smtp_password)
-                    server.sendmail(self.from_address, to_email, msg.as_string())
-                logger.info(f"[EmailProvider] Real SMTP email sent successfully to {to_email}")
-                return {"status": "SENT", "providerMessageId": f"smtp_{datetime.now(timezone.utc).timestamp()}"}
-            except Exception as e:
-                logger.error(f"[EmailProvider] SMTP send failed: {e}. Falling back to success log.")
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = self.from_address
+        msg["To"] = to_email
+        msg.attach(MIMEText(html_body, "html"))
 
-        return {"status": "SENT", "providerMessageId": f"email_{datetime.now(timezone.utc).timestamp()}"}
+        try:
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                server.starttls()
+                server.login(self.smtp_user, self.smtp_password)
+                server.sendmail(self.from_address, to_email, msg.as_string())
+        except Exception as error:
+            logger.error(
+                "[EmailProvider] SMTP send failed (%s).",
+                type(error).__name__,
+            )
+            raise RuntimeError("Email provider delivery failed.") from error
+
+        logger.info("[EmailProvider] Real SMTP email sent successfully.")
+        return {"status": "SENT", "providerMessageId": f"smtp_{datetime.now(timezone.utc).timestamp()}"}
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +112,8 @@ class NotificationPreferences(BaseModel):
     fcmEnabled: bool = True
     smsEnabled: bool = True
     emailEnabled: bool = True
-    smsNumber: Optional[str] = "+919876543210"
-    emailAddress: Optional[str] = "parent@test.com"
+    smsNumber: Optional[str] = None
+    emailAddress: Optional[str] = None
     mediumFcmEnabled: bool = True
     highFcmEnabled: bool = True
     highSmsEnabled: bool = True
@@ -148,7 +160,7 @@ class NotificationService:
     def update_preferences(self, prefs: NotificationPreferences) -> NotificationPreferences:
         email_key = (prefs.parentEmail or "parent@test.com").lower()
         self.preferences_db[email_key] = prefs
-        logger.info(f"[NotificationService] Updated preferences for {prefs.parentEmail}")
+        logger.info("[NotificationService] Notification preferences updated.")
         return prefs
 
     def notify_parent(self, incident: Dict[str, Any]):
@@ -159,8 +171,6 @@ class NotificationService:
         incident_id = incident.get("incidentId")
         parent_email = incident.get("parentEmail", "parent@test.com")
         risk_level = str(incident.get("riskLevel", "LOW")).upper()
-        child_name = incident.get("childName", "Child")
-        category = incident.get("category", "safety_alert")
 
         prefs = self.get_preferences(parent_email)
 
@@ -194,7 +204,7 @@ class NotificationService:
         parent_email = prefs.parentEmail
         risk_level = str(incident.get("riskLevel", "HIGH")).upper()
         child_name = incident.get("childName", "Child")
-        category = incident.get("category", "safety_alert")
+        category = incident.get("category") or "safety_alert"
 
         log_id = f"notif_{datetime.now(timezone.utc).timestamp()}_{channel.lower()}"
         now_str = datetime.now(timezone.utc).isoformat()
@@ -215,6 +225,8 @@ class NotificationService:
             if channel == "SMS":
                 message = f"ChildSafeLens Alert: A {risk_level.lower()}-risk incident was detected for {child_name}. Category: {category}. Please open your Parent Dashboard to review."
                 res = self.sms_provider.send_sms(prefs.smsNumber, message)
+                if res.get("status") != "SENT":
+                    raise RuntimeError("SMS provider did not confirm delivery.")
                 log_entry.status = res["status"]
                 log_entry.providerMessageId = res["providerMessageId"]
                 log_entry.sentAt = datetime.now(timezone.utc).isoformat()
@@ -236,21 +248,25 @@ class NotificationService:
                 </html>
                 """
                 res = self.email_provider.send_email(prefs.emailAddress, subject, html_body)
+                if res.get("status") != "SENT":
+                    raise RuntimeError("Email provider did not confirm delivery.")
                 log_entry.status = res["status"]
                 log_entry.providerMessageId = res["providerMessageId"]
                 log_entry.sentAt = datetime.now(timezone.utc).isoformat()
 
             elif channel == "FCM":
-                logger.info(f"[FCM] Push notification dispatched for incident {incident_id}")
-                log_entry.status = "SENT"
-                log_entry.sentAt = datetime.now(timezone.utc).isoformat()
+                raise RuntimeError("FCM provider is not implemented.")
 
             self._sent_idempotency_set.add((incident_id, channel))
 
-        except Exception as e:
-            logger.error(f"[NotificationService] Failed to send {channel} notification: {e}")
+        except Exception as error:
+            logger.error(
+                "[NotificationService] Failed to send %s notification (%s).",
+                channel,
+                type(error).__name__,
+            )
             log_entry.status = "FAILED"
-            log_entry.errorMessage = str(e)
+            log_entry.errorMessage = type(error).__name__
 
     def get_logs(self, incidentId: Optional[str] = None, parentEmail: Optional[str] = None) -> List[NotificationLogEntry]:
         results = self.logs_db

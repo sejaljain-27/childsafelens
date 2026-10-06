@@ -22,7 +22,11 @@ class LoginFragment : Fragment() {
         super.onCreate(savedInstanceState)
         
         // Auto-redirect if parent session is already active
-        viewModel.checkSession { isLoggedIn, hasChild ->
+        viewModel.checkSession { isLoggedIn, hasChild, error ->
+            if (error != null) {
+                Toast.makeText(context, error, Toast.LENGTH_LONG).show()
+                return@checkSession
+            }
             if (isLoggedIn) {
                 if (hasChild) {
                     findNavController().navigate(R.id.action_loginFragment_to_chatFragment)
@@ -55,7 +59,11 @@ class LoginFragment : Fragment() {
 
             viewModel.login(email, password) { success, error ->
                 if (success) {
-                    viewModel.checkSession { _, hasChild ->
+                    viewModel.checkSession { _, hasChild, sessionError ->
+                        if (sessionError != null) {
+                            Toast.makeText(context, sessionError, Toast.LENGTH_LONG).show()
+                            return@checkSession
+                        }
                         if (hasChild) {
                             findNavController().navigate(R.id.action_loginFragment_to_chatFragment)
                         } else {

@@ -17,11 +17,11 @@ import java.util.UUID
 
 /**
  * Manages incident creation, idempotency, local DB persistence,
- * and backend synchronization with FastAPI on port 8500.
+ * and backend synchronization with FastAPI.
  */
 object IncidentManager {
     private const val TAG = "IncidentManager"
-    private const val BASE_URL = "http://10.46.19.193:8001"
+    private const val BASE_URL = BackendApiConfig.BASE_URL
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private var db: AppDatabase? = null
@@ -47,13 +47,18 @@ object IncidentManager {
     ): String {
         val ctx = appContext ?: return incidentId
         val sessionManager = SessionManager(ctx)
-        val parentEmail = sessionManager.getParentEmail() ?: "parent@test.com"
-        val childName = sessionManager.getActiveChildProfile() ?: "Aarav"
+        val parentEmail = sessionManager.getParentEmail()
+        val childName = sessionManager.getActiveChildProfile()
+        val accessToken = sessionManager.getAccessToken()
+        if (parentEmail.isNullOrBlank() || childName.isNullOrBlank() || accessToken.isNullOrBlank()) {
+            Log.e(TAG, "Cannot link incident to a parent and child profile; no active account/profile.")
+            return incidentId
+        }
 
         val entity = IncidentEntity(
             incidentId = incidentId,
             parentEmail = parentEmail,
-            childId = "default_child",
+            childId = childName,
             childName = childName,
             type = type,
             messageSnippet = message.take(50),
@@ -72,10 +77,9 @@ object IncidentManager {
                 try {
                     database.incidentDao().insert(entity)
                     Log.d(TAG, "Incident saved locally: $incidentId [parent=$parentEmail, child=$childName, status=$status]")
-                    transmitToBackend(entity)
-
-                    if (status == "PENDING_PARENT_REVIEW") {
-                        pollForDecision(incidentId, onDecisionReceived)
+                    val synced = transmitToBackend(entity, message, accessToken)
+                    if (status == "PENDING_PARENT_REVIEW" && synced) {
+                        pollForDecision(incidentId, accessToken, onDecisionReceived)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to save or transmit incident", e)
@@ -88,63 +92,82 @@ object IncidentManager {
         return incidentId
     }
 
-    private fun transmitToBackend(incident: IncidentEntity) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val url = URL("$BASE_URL/incidents")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    setRequestProperty("Content-Type", "application/json; utf-8")
-                    setRequestProperty("Accept", "application/json")
-                    doOutput = true
-                    connectTimeout = 3000
-                    readTimeout = 3000
-                }
-
-                val json = JSONObject().apply {
-                    put("incidentId", incident.incidentId)
-                    put("parentEmail", incident.parentEmail)
-                    put("childId", incident.childId)
-                    put("childName", incident.childName)
-                    put("type", incident.type)
-                    put("messageSnippet", incident.messageSnippet)
-                    put("riskScore", incident.riskScore)
-                    put("riskLevel", incident.riskLevel)
-                    put("category", incident.category)
-                    put("packageName", incident.packageName)
-                    put("timestamp", incident.timestamp)
-                    put("status", incident.status)
-                }
-
-                OutputStreamWriter(conn.outputStream).use { it.write(json.toString()) }
-                val responseCode = conn.responseCode
-                Log.d(TAG, "Incident transmission response: $responseCode")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to transmit incident to $BASE_URL/incidents: ${e.message}", e)
+    private fun transmitToBackend(
+        incident: IncidentEntity,
+        messageText: String,
+        accessToken: String
+    ): Boolean {
+        val connection = try {
+            (URL("$BASE_URL/incidents").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("Content-Type", "application/json; utf-8")
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("Authorization", "Bearer $accessToken")
+                doOutput = true
+                connectTimeout = 3000
+                readTimeout = 3000
             }
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to connect to $BASE_URL/incidents", error)
+            return false
+        }
+
+        return try {
+            val json = JSONObject().apply {
+                put("incidentId", incident.incidentId)
+                put("parentEmail", incident.parentEmail)
+                put("childId", incident.childId)
+                put("childName", incident.childName)
+                put("type", incident.type)
+                put("messageSnippet", incident.messageSnippet)
+                put("messageText", messageText)
+                put("riskScore", incident.riskScore)
+                put("riskLevel", incident.riskLevel)
+                put("category", incident.category)
+                put("packageName", incident.packageName)
+                put("timestamp", incident.timestamp)
+                put("status", incident.status)
+            }
+            OutputStreamWriter(connection.outputStream).use { it.write(json.toString()) }
+            val responseCode = connection.responseCode
+            if (responseCode in 200..299) {
+                Log.d(TAG, "Incident synced to parent dashboard: ${incident.incidentId}")
+                true
+            } else {
+                Log.e(TAG, "Incident sync failed with HTTP $responseCode for ${incident.incidentId}")
+                false
+            }
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to transmit incident to $BASE_URL/incidents", error)
+            false
+        } finally {
+            connection.disconnect()
         }
     }
 
-    private fun pollForDecision(incidentId: String, onDecisionReceived: (String, String?) -> Unit) {
+    private fun pollForDecision(
+        incidentId: String,
+        accessToken: String,
+        onDecisionReceived: (String, String?) -> Unit
+    ) {
         scope.launch(Dispatchers.IO) {
-            val maxAttempts = 60 // poll for up to 120 seconds
-            var attempts = 0
-            while (attempts < maxAttempts) {
+            var retryDelayMillis = 2000L
+            while (true) {
+                delay(retryDelayMillis)
+                var connection: HttpURLConnection? = null
                 try {
-                    delay(2000L)
-                    attempts++
-                    val url = URL("$BASE_URL/incidents/$incidentId/decision")
-                    val conn = (url.openConnection() as HttpURLConnection).apply {
+                    connection = (URL("$BASE_URL/incidents/$incidentId/decision").openConnection() as HttpURLConnection).apply {
                         requestMethod = "GET"
                         connectTimeout = 2000
                         readTimeout = 2000
+                        setRequestProperty("Authorization", "Bearer $accessToken")
                     }
 
-                    if (conn.responseCode == 200) {
-                        val responseStr = conn.inputStream.bufferedReader().use { it.readText() }
+                    if (connection.responseCode == 200) {
+                        val responseStr = connection.inputStream.bufferedReader().use { it.readText() }
                         val json = JSONObject(responseStr)
                         val decision = json.optString("parentDecision", "")
-                        val guidance = json.optString("guidance", null)
+                        val guidance = json.optString("guidance").takeUnless { it == "null" || it.isBlank() }
 
                         if (decision.isNotEmpty() && decision != "null") {
                             Log.d(TAG, "Received parent decision via poll: $decision for incident $incidentId")
@@ -156,8 +179,12 @@ object IncidentManager {
                             return@launch
                         }
                     }
-                } catch (e: Exception) {
-                    // Ignore network polling blips while offline
+                    retryDelayMillis = 2000L
+                } catch (error: Exception) {
+                    retryDelayMillis = (retryDelayMillis * 2).coerceAtMost(15_000L)
+                    Log.w(TAG, "Unable to poll parent decision for $incidentId; retrying", error)
+                } finally {
+                    connection?.disconnect()
                 }
             }
         }

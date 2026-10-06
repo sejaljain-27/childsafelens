@@ -1,127 +1,59 @@
-"""
-model.py — wraps the risk-scoring model behind one function: score_text(text).
+"""Compatibility functions backed by the replaceable classifier service."""
 
-HOW TO PLUG IN YOUR REAL TRAINED MODEL (the 97.52% accuracy TF-IDF + LinearSVC
-pipeline from the Base Paper Analysis):
+import re
 
-1. In your training script, after fitting, save both the vectorizer(s) and the
-   classifier together in one file:
-
-       import joblib
-       joblib.dump(
-           {
-               "word_vectorizer": word_tfidf,      # your word-level TfidfVectorizer
-               "char_vectorizer": char_tfidf,      # your char-level TfidfVectorizer
-               "classifier": clf,                  # your tuned LinearSVC
-           },
-           "model.pkl",
-       )
-
-   (If you only used one vectorizer, just drop the char_vectorizer key and
-   the corresponding line below — search for "ADAPT HERE".)
-
-2. Copy model.pkl into this backend/ folder (same directory as this file).
-
-3. Restart the server. On startup this file will detect model.pkl and use
-   your real model automatically. Until then, it runs on a small built-in
-   fallback so the API works out of the box for integration testing.
-"""
-
-import os
-import math
-import joblib
-
-MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(os.path.dirname(__file__), "model.pkl"))
-
-_model_bundle = None
-_using_real_model = False
-
-if os.path.exists(MODEL_PATH):
-    try:
-        _model_bundle = joblib.load(MODEL_PATH)
-        _using_real_model = True
-        print(f"[model.py] Loaded real trained model from {MODEL_PATH}")
-    except Exception as e:
-        print(f"[model.py] Found {MODEL_PATH} but failed to load it: {e}")
-        print("[model.py] Falling back to the built-in placeholder scorer.")
-else:
-    print(f"[model.py] No model.pkl found at {MODEL_PATH}.")
-    print("[model.py] Using the built-in placeholder scorer until the real model is dropped in.")
+from classifier_service import classifier_service
 
 
-# ---------------------------------------------------------------------------
-# Real model path
-# ---------------------------------------------------------------------------
-def _score_with_real_model(text: str):
-    word_vec = _model_bundle["word_vectorizer"]
-    clf = _model_bundle["classifier"]
-
-    # ADAPT HERE: if you also trained a character-level vectorizer and
-    # concatenated features (word TF-IDF + char TF-IDF + custom features)
-    # before fitting LinearSVC, reproduce that exact same feature assembly
-    # here so the shapes match what the classifier expects. Example:
-    #
-    #   from scipy.sparse import hstack
-    #   char_vec = _model_bundle["char_vectorizer"]
-    #   X = hstack([word_vec.transform([text]), char_vec.transform([text])])
-    #
-    X = word_vec.transform([text])
-
-    # LinearSVC has no predict_proba by default. decision_function gives a
-    # signed distance from the boundary; squashing it through a sigmoid
-    # gives a usable 0-1 "risk score" for the nudge threshold and dashboard.
-    raw_score = clf.decision_function(X)[0]
-    risk_score = 1 / (1 + math.exp(-raw_score))
-
-    return risk_score
+def _is_standalone_hi(text: str) -> bool:
+    return re.fullmatch(r"hi[.!?,]*", text.strip(), flags=re.IGNORECASE) is not None
 
 
-# ---------------------------------------------------------------------------
-# Fallback path (used only until model.pkl is provided)
-# ---------------------------------------------------------------------------
-_FALLBACK_FLAG_WORDS = [
-    "kill", "die", "hate", "ugly", "stupid", "idiot", "loser", "worthless",
-    "kameena", "kameenaa", "kameenaaa", "chutiya", "gadha", "g@dha",
-    "bakwaas", "nikamma", "besharam", "harami",
-]
+def classifier_status():
+    return classifier_service.status()
 
 
-def _score_with_fallback(text: str):
-    lowered = text.lower()
-    hits = sum(1 for w in _FALLBACK_FLAG_WORDS if w in lowered)
-
-    caps_ratio = sum(1 for c in text if c.isupper()) / max(len(text), 1)
-    exclaim_count = text.count("!")
-
-    score = 0.15  # baseline
-    score += 0.35 * min(hits, 2)
-    score += 0.15 if caps_ratio > 0.4 else 0
-    score += 0.05 * min(exclaim_count, 2)
-
-    return min(score, 0.98)
-
-
-def _label_for(score: float) -> str:
-    if score >= 0.7:
-        return "high_risk"
-    if score >= 0.4:
-        return "medium_risk"
-    return "low_risk"
+def predict_text(text: str) -> dict:
+    """Return the cascade gate and, for bullying, its category prediction."""
+    classification = classifier_service.classify(text)
+    model_is_bullying = classification["label"] == "Bullying"
+    decision_override = "standalone_greeting" if _is_standalone_hi(text) else None
+    is_bullying = model_is_bullying and decision_override is None
+    probability = classification["probability"]
+    category = classification["category"] if is_bullying else None
+    return {
+        "risk_score": probability,
+        "p_bullying": probability,
+        "gate_threshold": classification["gate_threshold"],
+        "is_risky": is_bullying,
+        "cyberbullying": is_bullying,
+        "classification": "CYBERBULLYING" if is_bullying else "CLEAN",
+        "incident_created": False,
+        "label": "high_risk" if is_bullying else "low_risk",
+        "stage1_label": classification["label"],
+        "model_classification": classification["label"],
+        "decision_override": decision_override,
+        "stage1_status": classification["model_status"],
+        "classification_label": "Bullying" if is_bullying else "Clean",
+        "classification_confidence": classification["confidence"],
+        "model_status": classification["model_status"],
+        "model_version": classification["model_version"],
+        "development_simulation": classification["development_simulation"],
+        "classification_notice": classification["notice"],
+        "category": category,
+        "categories": classification["categories"] if is_bullying else [],
+        "category_status": "predicted" if is_bullying else "skipped_clean",
+        "stage": (
+            "Stage 1 passed -> Stage 2 category head"
+            if is_bullying
+            else "Standalone greeting safety override"
+            if decision_override
+            else "Stage 1: early exit (Clean)"
+        ),
+    }
 
 
 def score_text(text: str):
-    """
-    Returns (risk_score: float in [0, 1], label: str, is_risky: bool)
-    """
-    if not text or not text.strip():
-        return 0.0, "low_risk", False
-
-    if _using_real_model:
-        risk_score = _score_with_real_model(text)
-    else:
-        risk_score = _score_with_fallback(text)
-
-    label = _label_for(risk_score)
-    is_risky = risk_score >= 0.5
-
-    return risk_score, label, is_risky
+    """Return the legacy (risk_score, risk_level, is_risky) tuple."""
+    result = predict_text(text)
+    return result["risk_score"], result["label"], result["is_risky"]

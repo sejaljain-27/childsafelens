@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   StyleSheet,
@@ -10,28 +10,67 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import AlertCard from '../components/AlertCard';
-import { fetchAlerts, fetchDashboardStats, submitDecision, type IncidentType, type DashboardStats } from '../services/alertsService';
+import {
+  fetchAlerts,
+  fetchChildProfiles,
+  fetchChildRiskTimeline,
+  fetchDashboardStats,
+  fetchIncidentExplanation,
+  fetchResearchRisk,
+  clearParentSession,
+  hasParentSession,
+  ParentSessionExpiredError,
+  fetchSocialGraphRisk,
+  submitDecision,
+  type ChildRiskTimeline,
+  type IncidentExplanation,
+  type IncidentType,
+  type DashboardStats,
+  type ResearchRisk,
+  type SocialGraphRisk,
+} from '../services/alertsService';
+
+const riskComponentLabels = [
+  ['classifier_probability', 'Cyberbullying'],
+  ['targeting', 'Targeting'],
+  ['severity', 'Severity'],
+  ['multimodal', 'Multimodal'],
+  ['temporal', 'Temporal'],
+  ['escalation', 'Escalation'],
+  ['social_graph', 'Social'],
+  ['historical', 'Historical'],
+] as const;
+
+const displayComponentValue = (value: number | null | undefined, status?: string) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value.toFixed(3);
+  }
+  if (status?.includes('insufficient') || status?.includes('uncalibrated')) {
+    return 'Insufficient evidence';
+  }
+  return 'Not available';
+};
+
+const displayEvidenceCount = (value: number | null | undefined) =>
+  typeof value === 'number' && Number.isFinite(value) ? String(value) : 'Not available';
 
 const DashboardScreen: React.FC = () => {
   const router = useRouter();
-  const params = useLocalSearchParams();
 
   const getStoredEmail = () => {
-    if (typeof window !== 'undefined') {
+    if (hasParentSession()) {
       return localStorage.getItem('childsafelens_parent_email');
     }
     return null;
   };
 
-  const [parentEmail, setParentEmail] = useState<string>(
-    (params.email as string) || getStoredEmail() || 'parent@test.com'
-  );
-  const [availableChildren, setAvailableChildren] = useState<string[]>(['Aarav']);
-  const [selectedChild, setSelectedChild] = useState<string>('Aarav');
+  const [parentEmail] = useState<string>(getStoredEmail() || '');
+  const [availableChildren, setAvailableChildren] = useState<string[]>([]);
+  const [selectedChild, setSelectedChild] = useState<string>('');
   const [stats, setStats] = useState<DashboardStats>({
     total_events: 0,
     high_risk_count: 0,
@@ -41,45 +80,129 @@ const DashboardScreen: React.FC = () => {
   });
   const [outgoingIncidents, setOutgoingIncidents] = useState<IncidentType[]>([]);
   const [incomingIncidents, setIncomingIncidents] = useState<IncidentType[]>([]);
+  const [researchRisk, setResearchRisk] = useState<ResearchRisk | null>(null);
+  const [riskTimeline, setRiskTimeline] = useState<ChildRiskTimeline | null>(null);
+  const [socialGraph, setSocialGraph] = useState<SocialGraphRisk | null>(null);
+  const [riskExplanation, setRiskExplanation] = useState<IncidentExplanation | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
 
-  const loadData = async () => {
-    setRefreshing(true);
-    const parentIncidents = await fetchAlerts(parentEmail);
-    const children = Array.from(new Set(parentIncidents.map(i => i.childName).filter(Boolean))) as string[];
-    const finalChildren = children.length > 0 ? children : (parentEmail === 'khushi@123.com' ? ['Takshu'] : ['Aarav', 'Kiara']);
-    setAvailableChildren(finalChildren);
+  const loadData = useCallback(async () => {
+    if (!parentEmail) return;
+    try {
+      const profiles = await fetchChildProfiles(parentEmail);
+      const children = Array.from(new Set(profiles.map(profile => profile.childName.trim()).filter(Boolean)));
+      setAvailableChildren(children);
+      setProfileError(null);
 
-    const currentChild = finalChildren.includes(selectedChild) ? selectedChild : finalChildren[0];
-    if (currentChild !== selectedChild) {
-      setSelectedChild(currentChild);
+      const currentChild = children.includes(selectedChild) ? selectedChild : children[0];
+      if (!currentChild) {
+        setSelectedChild('');
+        setStats({
+          total_events: 0,
+          high_risk_count: 0,
+          medium_risk_count: 0,
+          low_risk_count: 0,
+          pending_count: 0,
+        });
+        setResearchRisk(null);
+        setRiskTimeline(null);
+        setSocialGraph(null);
+        setRiskExplanation(null);
+        setOutgoingIncidents([]);
+        setIncomingIncidents([]);
+        return;
+      }
+
+      if (currentChild !== selectedChild) setSelectedChild(currentChild);
+      const selectedProfile = profiles.find(profile => profile.childName === currentChild);
+      const currentChildId = selectedProfile?.childId ?? '';
+      const [dashboardStats, allIncidents, childRisk, timeline, graph] = await Promise.all([
+        fetchDashboardStats(parentEmail, currentChild),
+        fetchAlerts(parentEmail, currentChild),
+        fetchResearchRisk(parentEmail, currentChild),
+        currentChildId
+          ? fetchChildRiskTimeline(currentChildId, parentEmail)
+          : Promise.resolve(null),
+        currentChildId
+          ? fetchSocialGraphRisk(currentChildId, parentEmail)
+          : Promise.resolve(null),
+      ]);
+      setStats(dashboardStats);
+      setResearchRisk(childRisk);
+      setRiskTimeline(timeline);
+      setSocialGraph(graph);
+      const latestIncident = allIncidents.reduce<IncidentType | null>(
+        (latest, incident) => (
+          latest === null || incident.timestamp > latest.timestamp ? incident : latest
+        ),
+        null,
+      );
+      setRiskExplanation(
+        latestIncident
+          ? await fetchIncidentExplanation(latestIncident.incidentId, parentEmail)
+          : null,
+      );
+
+      const filtered = allIncidents.filter(i =>
+        i.riskLevel === 'HIGH' ||
+        i.riskLevel === 'CRITICAL' ||
+        i.riskLevel === 'high_risk' ||
+        i.status === 'PENDING_PARENT_REVIEW' ||
+        i.status === 'EDIT_REQUIRED'
+      );
+      setOutgoingIncidents(filtered.filter(i => (i.type?.toUpperCase() === 'OUTGOING') || !i.type));
+      setIncomingIncidents(filtered.filter(i => i.type?.toUpperCase() === 'INCOMING'));
+    } catch (error) {
+      if (error instanceof ParentSessionExpiredError) return;
+      console.error('Failed to load connected child profiles:', error);
+      setProfileError(error instanceof Error ? error.message : 'Unable to load child profiles.');
+      setAvailableChildren([]);
+      setSelectedChild('');
+      setStats({
+        total_events: 0,
+        high_risk_count: 0,
+        medium_risk_count: 0,
+        low_risk_count: 0,
+        pending_count: 0,
+      });
+      setResearchRisk(null);
+      setRiskTimeline(null);
+      setSocialGraph(null);
+      setRiskExplanation(null);
+      setOutgoingIncidents([]);
+      setIncomingIncidents([]);
+    } finally {
+      setRefreshing(false);
     }
+  }, [parentEmail, selectedChild]);
 
-    const [dashboardStats, allIncidents] = await Promise.all([
-      fetchDashboardStats(parentEmail, currentChild),
-      fetchAlerts(parentEmail, currentChild)
-    ]);
-    setStats(dashboardStats);
-
-    // Filter for High, Critical risk or pending parent review
-    const filtered = allIncidents.filter(i =>
-      i.riskLevel === 'HIGH' ||
-      i.riskLevel === 'CRITICAL' ||
-      i.riskLevel === 'high_risk' ||
-      i.status === 'PENDING_PARENT_REVIEW' ||
-      i.status === 'EDIT_REQUIRED'
-    );
-
-    setOutgoingIncidents(filtered.filter(i => (i.type?.toUpperCase() === 'OUTGOING') || !i.type));
-    setIncomingIncidents(filtered.filter(i => i.type?.toUpperCase() === 'INCOMING'));
-    setRefreshing(false);
+  const refreshData = async () => {
+    setRefreshing(true);
+    await loadData();
   };
 
   useEffect(() => {
-    loadData();
-    const interval = setInterval(loadData, 4000);
-    return () => clearInterval(interval);
-  }, [parentEmail, selectedChild]);
+    if (typeof window === 'undefined') return;
+    const handleExpiredSession = () => router.replace('/');
+    window.addEventListener('childsafelens-session-expired', handleExpiredSession);
+    return () => {
+      window.removeEventListener('childsafelens-session-expired', handleExpiredSession);
+    };
+  }, [router]);
+
+  useEffect(() => {
+    if (!parentEmail) {
+      router.replace('/');
+      return;
+    }
+    const initialLoad = setTimeout(() => void loadData(), 0);
+    const interval = setInterval(() => void loadData(), 4000);
+    return () => {
+      clearTimeout(initialLoad);
+      clearInterval(interval);
+    };
+  }, [loadData, parentEmail, router]);
 
   const handleDecision = async (incidentId: string, decision: 'ALLOW' | 'BLOCK' | 'EDIT') => {
     await submitDecision(incidentId, decision);
@@ -87,9 +210,7 @@ const DashboardScreen: React.FC = () => {
   };
 
   const handleLogout = () => {
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('childsafelens_parent_email');
-    }
+    clearParentSession();
     router.replace('/');
   };
 
@@ -106,7 +227,7 @@ const DashboardScreen: React.FC = () => {
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadData} />}
+          refreshControl={          <RefreshControl refreshing={refreshing} onRefresh={refreshData} />}
         >
           {/* Header */}
           <View style={styles.header}>
@@ -132,33 +253,152 @@ const DashboardScreen: React.FC = () => {
           {/* Children Selector & Summary Metrics */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Connected Child Profile</Text>
-            <View style={styles.childTabsRow}>
-              {availableChildren.map((child) => (
-                <TouchableOpacity
-                  key={child}
-                  style={[styles.childTab, selectedChild === child && styles.activeChildTab]}
-                  onPress={() => setSelectedChild(child)}
-                >
-                  <Text style={[styles.childTabText, selectedChild === child && styles.activeChildTabText]}>{child}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            {availableChildren.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Text style={styles.emptyText}>
+                  {profileError
+                    ? `Could not load connected profiles: ${profileError}`
+                    : `No child profile is connected to ${parentEmail} yet. Sign in to the Android app with this same parent email and create a child profile.`}
+                </Text>
+              </View>
+            ) : (
+              <>
+                <View style={styles.childTabsRow}>
+                  {availableChildren.map((child) => (
+                    <TouchableOpacity
+                      key={child}
+                      style={[styles.childTab, selectedChild === child && styles.activeChildTab]}
+                      onPress={() => setSelectedChild(child)}
+                    >
+                      <Text style={[styles.childTabText, selectedChild === child && styles.activeChildTabText]}>{child}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
 
-            {/* Metric Cards (High & Critical Risk focus) */}
-            <View style={styles.metricsGrid}>
-              <View style={styles.metricCard}>
-                <Text style={[styles.metricNumber, { color: '#FF9800' }]}>{stats.pending_count}</Text>
-                <Text style={[styles.metricLabel, { color: '#F57C00' }]}>Pending</Text>
-              </View>
-              <View style={styles.metricCard}>
-                <Text style={[styles.metricNumber, { color: '#E91E63' }]}>{stats.high_risk_count}</Text>
-                <Text style={[styles.metricLabel, { color: '#C2185B' }]}>High Risk</Text>
-              </View>
-              <View style={styles.metricCard}>
-                <Text style={[styles.metricNumber, { color: '#42A5F5' }]}>{stats.total_events}</Text>
-                <Text style={[styles.metricLabel, { color: '#1976D2' }]}>Total</Text>
-              </View>
-            </View>
+                {/* Metric Cards (High & Critical Risk focus) */}
+                <View style={styles.metricsGrid}>
+                  <View style={styles.metricCard}>
+                    <Text style={[styles.metricNumber, { color: '#FF9800' }]}>{stats.pending_count}</Text>
+                    <Text style={[styles.metricLabel, { color: '#F57C00' }]}>Pending</Text>
+                  </View>
+                  <View style={styles.metricCard}>
+                    <Text style={[styles.metricNumber, { color: '#E91E63' }]}>{stats.high_risk_count}</Text>
+                    <Text style={[styles.metricLabel, { color: '#C2185B' }]}>High Risk</Text>
+                  </View>
+                  <View style={styles.metricCard}>
+                    <Text style={[styles.metricNumber, { color: '#42A5F5' }]}>{stats.total_events}</Text>
+                    <Text style={[styles.metricLabel, { color: '#1976D2' }]}>Total</Text>
+                  </View>
+                </View>
+                <View style={styles.researchRiskCard}>
+                  <Text style={styles.researchRiskTitle}>Classification</Text>
+                  <Text style={styles.researchRiskText}>
+                    {researchRisk?.classifier?.status === 'dummy'
+                      ? 'Development/Dummy classifier (simulation only)'
+                      : researchRisk?.classifier?.status === 'real'
+                        ? 'Supplied PKL classifier connected (classification performance not independently validated)'
+                        : 'Classifier status: Not available'}
+                  </Text>
+                  {researchRisk?.classification_disclaimer && (
+                    <Text style={styles.researchRiskNote}>
+                      {researchRisk.classification_disclaimer}
+                    </Text>
+                  )}
+                </View>
+                <View style={styles.researchRiskCard}>
+                  <Text style={styles.researchRiskTitle}>Research Risk Assessment</Text>
+                  <Text style={styles.researchRiskValue}>
+                    {researchRisk?.crs === null || researchRisk?.crs === undefined
+                      ? 'CRS: Not available'
+                      : `CRS: ${researchRisk.crs.toFixed(1)} / 100`}
+                  </Text>
+                  <Text style={styles.researchRiskText}>
+                    Risk state: {researchRisk?.risk_state ?? 'Loading'}
+                  </Text>
+                  <Text style={styles.researchRiskText}>
+                    Stored incidents: {researchRisk?.incident_count ?? 'Not available'}
+                  </Text>
+                  <Text style={styles.researchRiskText}>
+                    Identified attackers: {researchRisk?.social_graph.attacker_count ?? 'Not available'}
+                  </Text>
+                  <Text style={styles.researchRiskNote}>
+                    {researchRisk?.message ?? 'Loading risk assessment status.'}
+                  </Text>
+                  <Text style={styles.researchRiskSubheading}>Risk components</Text>
+                  {riskComponentLabels.map(([key, label]) => {
+                    const component = researchRisk?.components[key];
+                    return (
+                      <View key={key} style={styles.researchRiskRow}>
+                        <Text style={styles.researchRiskText}>{label}</Text>
+                        <Text style={styles.researchRiskValueSmall}>
+                          {displayComponentValue(component?.value, component?.status)}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                  <Text style={styles.researchRiskSubheading}>Risk timeline</Text>
+                  {!riskTimeline || riskTimeline.timeline.length === 0 ? (
+                    <Text style={styles.researchRiskNote}>
+                      {riskTimeline?.status === 'no_history'
+                        ? 'Insufficient evidence: no stored incidents for this child.'
+                        : 'Not available'}
+                    </Text>
+                  ) : (
+                    riskTimeline.timeline.slice(-5).reverse().map(point => (
+                      <View key={point.incident_id} style={styles.timelineRow}>
+                        <Text style={styles.researchRiskText}>
+                          {new Date(point.timestamp).toLocaleString()}
+                        </Text>
+                        <Text style={styles.researchRiskValueSmall}>
+                          {point.crs === null
+                            ? 'Not available'
+                            : `${point.crs.toFixed(1)} / 100`}
+                          {' · '}
+                          {point.risk_state || 'Not available'}
+                        </Text>
+                      </View>
+                    ))
+                  )}
+                  <Text style={styles.researchRiskSubheading}>Social context</Text>
+                  <Text style={styles.researchRiskText}>
+                    Observed interactions: {displayEvidenceCount(socialGraph?.interaction_count)}
+                    {' · '}Identified senders: {displayEvidenceCount(socialGraph?.attacker_count)}
+                  </Text>
+                  <Text style={styles.researchRiskText}>
+                    Sender concentration: {displayComponentValue(
+                      socialGraph?.features.concentration.value,
+                      socialGraph?.features.concentration.status,
+                    )}
+                    {' · '}Graph score: {displayComponentValue(
+                      socialGraph?.graph_score,
+                      socialGraph?.graph_score_status,
+                    )}
+                  </Text>
+                  <Text style={styles.researchRiskSubheading}>SHAP contributors</Text>
+                  {riskExplanation?.status === 'computed' && riskExplanation.contributors?.length ? (
+                    riskExplanation.contributors.map(contribution => (
+                      <View key={contribution.feature} style={styles.researchRiskRow}>
+                        <Text style={styles.researchRiskText}>{contribution.feature}</Text>
+                        <Text style={styles.researchRiskValueSmall}>
+                          {contribution.value > 0 ? '+' : ''}
+                          {contribution.value.toFixed(4)}
+                        </Text>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.researchRiskNote}>
+                      {riskExplanation?.status === 'unavailable' ||
+                        researchRisk?.risk_fusion?.explanation?.message === 'Explanation unavailable'
+                        ? 'Explanation unavailable'
+                        : 'Not available'}
+                    </Text>
+                  )}
+                  <Text style={styles.researchRiskNote}>
+                    Parent action is separate from risk state. Review incidents and choose an available action; HIGH or CRITICAL never automatically means BLOCK.
+                  </Text>
+                </View>
+              </>
+            )}
           </View>
 
           {/* OUTGOING MESSAGES SECTION */}
@@ -166,7 +406,9 @@ const DashboardScreen: React.FC = () => {
             <Text style={styles.sectionTitle}>📤 Outgoing Messages (High / Critical Risk)</Text>
             {outgoingIncidents.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>No high-risk outgoing alerts for {selectedChild}.</Text>
+                <Text style={styles.emptyText}>
+                  {selectedChild ? `No high-risk outgoing alerts for ${selectedChild}.` : 'No connected child profile is available for this parent account.'}
+                </Text>
               </View>
             ) : (
               outgoingIncidents.map((incident) => (
@@ -180,7 +422,9 @@ const DashboardScreen: React.FC = () => {
             <Text style={styles.sectionTitle}>📥 Incoming Messages (High / Critical Risk)</Text>
             {incomingIncidents.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>No high-risk incoming alerts for {selectedChild}.</Text>
+                <Text style={styles.emptyText}>
+                  {selectedChild ? `No high-risk incoming alerts for ${selectedChild}.` : 'No connected child profile is available for this parent account.'}
+                </Text>
               </View>
             ) : (
               incomingIncidents.map((incident) => (
@@ -197,7 +441,12 @@ const DashboardScreen: React.FC = () => {
                 <MaterialIcons name="qr-code-scanner" size={48} color="#000000" />
                 <Text style={styles.quickActionText}>Scan / Refresh</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.quickActionCard} onPress={() => router.push('/reports')} activeOpacity={0.7}>
+              <TouchableOpacity
+                style={styles.quickActionCard}
+                onPress={() => router.push(`/reports?email=${encodeURIComponent(parentEmail)}&childName=${encodeURIComponent(selectedChild)}`)}
+                disabled={!selectedChild}
+                activeOpacity={0.7}
+              >
                 <MaterialIcons name="bar-chart" size={48} color="#000000" />
                 <Text style={styles.quickActionText}>Analytics & Insights</Text>
               </TouchableOpacity>
@@ -318,6 +567,44 @@ const styles = StyleSheet.create({
     color: '#000000',
     textTransform: 'uppercase',
   },
+  researchRiskCard: {
+    marginTop: 14,
+    padding: 16,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.75)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.95)',
+  },
+  researchRiskTitle: { fontSize: 15, fontWeight: '800', color: '#000000', marginBottom: 8 },
+  researchRiskValue: { fontSize: 20, fontWeight: '800', color: '#000000', marginBottom: 4 },
+  researchRiskSubheading: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#111827',
+    marginTop: 14,
+    marginBottom: 5,
+  },
+  researchRiskRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 3,
+  },
+  researchRiskValueSmall: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#111827',
+    textAlign: 'right',
+    flexShrink: 1,
+  },
+  timelineRow: {
+    paddingVertical: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(107, 114, 128, 0.18)',
+  },
+  researchRiskText: { fontSize: 13, fontWeight: '600', color: '#000000', marginTop: 3 },
+  researchRiskNote: { fontSize: 12, color: '#374151', marginTop: 8, lineHeight: 17 },
   emptyCard: { 
     backgroundColor: 'rgba(255, 255, 255, 0.75)', 
     borderRadius: 20, 

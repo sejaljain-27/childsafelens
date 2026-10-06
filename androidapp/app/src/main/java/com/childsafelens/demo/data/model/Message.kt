@@ -9,7 +9,8 @@ data class Message(
     var displayText: String = text,
     var isRevealed: Boolean = false,
     var visibleToReceiver: Boolean = true,
-    var isBlockedByParent: Boolean = false
+    var isBlockedByParent: Boolean = false,
+    val classificationStatus: String? = null
 )
 
 enum class Sender {

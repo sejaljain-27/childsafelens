@@ -8,6 +8,8 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
@@ -33,7 +35,6 @@ class NudgeAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         incomingOverlayManager = IncomingOverlayManager(applicationContext)
-        Inference.init(applicationContext)
         Masker.init(applicationContext)
         IncidentManager.init(applicationContext)
         Log.d(TAG, "Silent Background Service connected")
@@ -103,8 +104,9 @@ class NudgeAccessibilityService : AccessibilityService() {
             if (!originalText.isNullOrBlank()) {
                 Log.d(TAG, "Extracted text for pending hold: '$originalText'")
                 runSilentInferenceAndPolicy(editNode, originalText, packageName)
+            } else {
+                editNode.recycle()
             }
-            editNode.recycle()
         }
     }
 
@@ -122,66 +124,135 @@ class NudgeAccessibilityService : AccessibilityService() {
     }
 
     private fun runSilentInferenceAndPolicy(editNode: AccessibilityNodeInfo, text: String, packageName: String) {
+        val ownedNode = AccessibilityNodeInfo.obtain(editNode)
         thread(name = "silent-inference") {
-            val score = Inference.scoreText(text)
-            val policy = RiskPolicyManager.evaluate(score)
-            val maskedText = Masker.mask(text)
-
-            Log.d(TAG, "Score: $score -> RiskLevel: ${policy.riskLevel}, RequiresApproval: ${policy.requiresParentApproval}")
-
             val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
-            IncidentManager.createAndSendIncident(
-                incidentId = incidentId,
-                type = "OUTGOING",
-                message = text,
-                riskScore = score,
-                riskLevel = policy.riskLevel,
-                category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
-                packageName = packageName,
-                status = if (policy.requiresParentApproval) "PENDING" else "ALLOWED",
-                onDecisionReceived = { decision, guidance ->
-                    ParentDecisionManager.handleDecision(incidentId, decision, guidance) { result ->
-                        executeDecisionSilently(editNode, text, maskedText, result)
-                    }
-                }
-            )
-
-            if (policy.requiresParentApproval) {
-                // TRUE PENDING STATE: Hold/clear input immediately so message does NOT send directly
-                applyHoldState(editNode)
-
-                // Wait for parent decision or 60s timeout
-                PendingMessageManager.holdMessage(incidentId, policy.timeoutMillis) {
-                    ParentDecisionManager.handleTimeout(incidentId, policy.defaultTimeoutAction) { result ->
-                        executeDecisionSilently(editNode, text, maskedText, result)
-                    }
-                }
-            } else {
-                if (maskedText != text) {
-                    applyMaskedText(editNode, maskedText)
+            val initialResultHandled = CountDownLatch(1)
+            val result = BackendClassifierClient.classify(text) { rechecked ->
+                initialResultHandled.await()
+                val retainedForDecision =
+                    handleClassifiedText(ownedNode, text, packageName, incidentId, rechecked)
+                if (!retainedForDecision) {
+                    ownedNode.recycle()
                 }
             }
+            val retainedForDecision = try {
+                handleClassifiedText(ownedNode, text, packageName, incidentId, result)
+            } finally {
+                initialResultHandled.countDown()
+            }
+            if (!result.offlineUnverified && !retainedForDecision) ownedNode.recycle()
         }
     }
 
-    private fun applyHoldState(editNode: AccessibilityNodeInfo) {
-        handler.post {
-            editNode.refresh()
-            val args = Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+    private fun handleClassifiedText(
+        editNode: AccessibilityNodeInfo,
+        text: String,
+        packageName: String,
+        incidentId: String,
+        result: ClassificationResult
+    ): Boolean {
+        val maskedText = Masker.mask(text)
+        if (result.offlineUnverified) {
+            val fallbackPolicy = RiskPolicyManager.evaluate(result.riskScore)
+            Log.w(TAG, "Offline/unverified fallback used; queued for backend recheck")
+            if (fallbackPolicy.requiresParentApproval) {
+                applyHoldState(editNode)
+            } else if (maskedText != text) {
+                applyMaskedText(editNode, maskedText)
             }
-            editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-            Log.d(TAG, "Message held in PENDING state. Input field cleared awaiting parent decision.")
+            return false
+        }
+
+        if (result.label == "Clean") {
+            Log.i(TAG, "Backend classified message as Clean; no incident created")
+            applyMaskedText(editNode, text)
+            return false
+        }
+        if (!result.shouldCreateIncident) return false
+
+        val policy = RiskPolicyManager.evaluateForClassification(result.riskScore, result.label.orEmpty())
+        Log.d(TAG, "Backend classified Bullying: risk=${policy.riskLevel}, approval=${policy.requiresParentApproval}")
+        if (!policy.requiresParentApproval) {
+            createVerifiedIncident(text, packageName, incidentId, result, policy)
+            applyMaskedText(editNode, maskedText)
+            return false
+        }
+
+        val decisionHandled = AtomicBoolean(false)
+        val handleAction: (ParentDecisionManager.DecisionResult) -> Unit = { action ->
+            if (decisionHandled.compareAndSet(false, true)) {
+                executeDecisionSilently(editNode, text, maskedText, action)
+                editNode.recycle()
+            }
+        }
+        createVerifiedIncident(text, packageName, incidentId, result, policy) { decision, guidance ->
+            ParentDecisionManager.handleDecision(incidentId, decision, guidance) { action ->
+                handleAction(action)
+            }
+        }
+        applyHoldState(editNode)
+        PendingMessageManager.holdMessage(incidentId, policy.timeoutMillis) {
+            ParentDecisionManager.handleTimeout(incidentId, policy.defaultTimeoutAction) { action ->
+                handleAction(action)
+            }
+        }
+        return true
+    }
+
+    private fun createVerifiedIncident(
+        text: String,
+        packageName: String,
+        incidentId: String,
+        result: ClassificationResult,
+        policy: RiskPolicyManager.PolicyEvaluation = RiskPolicyManager.evaluateForClassification(
+            result.riskScore,
+            result.label.orEmpty()
+        ),
+        onDecisionReceived: (String, String?) -> Unit = { _, _ -> }
+    ) {
+        if (!result.shouldCreateIncident) return
+        IncidentManager.createAndSendIncident(
+            incidentId = incidentId,
+            type = "OUTGOING",
+            message = text,
+            riskScore = result.riskScore,
+            riskLevel = policy.riskLevel,
+            category = "potential_cyberbullying",
+            packageName = packageName,
+            status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
+            onDecisionReceived = onDecisionReceived
+        )
+    }
+
+    private fun applyHoldState(editNode: AccessibilityNodeInfo) {
+        val node = AccessibilityNodeInfo.obtain(editNode)
+        handler.post {
+            try {
+                node.refresh()
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+                }
+                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                Log.d(TAG, "Message held in PENDING state. Input field cleared awaiting parent decision.")
+            } finally {
+                node.recycle()
+            }
         }
     }
 
     private fun applyMaskedText(editNode: AccessibilityNodeInfo, maskedText: String) {
+        val node = AccessibilityNodeInfo.obtain(editNode)
         handler.post {
-            editNode.refresh()
-            val args = Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, maskedText)
+            try {
+                node.refresh()
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, maskedText)
+                }
+                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            } finally {
+                node.recycle()
             }
-            editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         }
     }
 
@@ -191,24 +262,29 @@ class NudgeAccessibilityService : AccessibilityService() {
         maskedText: String,
         result: ParentDecisionManager.DecisionResult
     ) {
+        val node = AccessibilityNodeInfo.obtain(editNode)
         handler.post {
-            when (result) {
-                ParentDecisionManager.DecisionResult.Allow -> {
-                    Log.d(TAG, "Parent ALLOWED message. Restoring text and allowing send.")
-                    applyMaskedText(editNode, maskedText)
-                }
-                ParentDecisionManager.DecisionResult.Block -> {
-                    Log.d(TAG, "Parent BLOCKED message. Keeping input cleared.")
-                    editNode.refresh()
-                    val args = Bundle().apply {
-                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+            try {
+                when (result) {
+                    ParentDecisionManager.DecisionResult.Allow -> {
+                        Log.d(TAG, "Parent ALLOWED message. Restoring text and allowing send.")
+                        applyMaskedText(node, maskedText)
                     }
-                    editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                    ParentDecisionManager.DecisionResult.Block -> {
+                        Log.d(TAG, "Parent BLOCKED message. Keeping input cleared.")
+                        node.refresh()
+                        val args = Bundle().apply {
+                            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+                        }
+                        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                    }
+                    is ParentDecisionManager.DecisionResult.Edit -> {
+                        Log.d(TAG, "Parent requested EDIT with guidance: ${result.guidance}")
+                    }
+                    else -> {}
                 }
-                is ParentDecisionManager.DecisionResult.Edit -> {
-                    Log.d(TAG, "Parent requested EDIT with guidance: ${result.guidance}")
-                }
-                else -> {}
+            } finally {
+                node.recycle()
             }
         }
     }

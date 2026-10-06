@@ -1,17 +1,19 @@
 package com.childsafelens.demo.ui.viewmodel
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.asLiveData
 import androidx.lifecycle.viewModelScope
+import com.childsafelens.demo.BackendAccountClient
+import com.childsafelens.demo.BackendApiException
+import com.childsafelens.demo.BackendClassifierClient
+import com.childsafelens.demo.ClassificationResult
 import com.childsafelens.demo.EventLogger
 import com.childsafelens.demo.IncidentManager
-import com.childsafelens.demo.Inference
 import com.childsafelens.demo.Masker
-import com.childsafelens.demo.ParentDecisionManager
-import com.childsafelens.demo.PendingMessageManager
 import com.childsafelens.demo.RiskPolicyManager
 import com.childsafelens.demo.data.db.AppDatabase
 import com.childsafelens.demo.data.model.ChildProfile
@@ -25,6 +27,7 @@ import com.childsafelens.demo.security.SessionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Locale
 import java.util.UUID
 
 class AuthViewModel(application: Application) : AndroidViewModel(application) {
@@ -33,74 +36,129 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val childDao = db.childProfileDao()
     val sessionManager = SessionManager(application)
 
-    fun checkSession(onResult: (isLoggedIn: Boolean, hasChild: Boolean) -> Unit) {
+    fun checkSession(onResult: (isLoggedIn: Boolean, hasChild: Boolean, error: String?) -> Unit) {
         val email = sessionManager.getParentEmail()
         if (email != null) {
+            val accessToken = sessionManager.getAccessToken()
+            if (accessToken.isNullOrBlank()) {
+                sessionManager.logout()
+                onResult(false, false, "Please sign in again to refresh your secure session.")
+                return
+            }
             viewModelScope.launch {
-                val profiles = withContext(Dispatchers.IO) {
-                    childDao.getChildProfilesForParent(email)
+                try {
+                    val hasChild = withContext(Dispatchers.IO) {
+                        val localProfiles = childDao.getChildProfilesForParent(email)
+                        val remoteNames = BackendAccountClient.getChildProfiles(email, accessToken)
+                        localProfiles.forEach { profile ->
+                            if (!remoteNames.any { it.equals(profile.displayName, ignoreCase = true) }) {
+                                BackendAccountClient.createChildProfile(email, profile.displayName, accessToken)
+                            }
+                        }
+                        val connectedNames = BackendAccountClient.getChildProfiles(email, accessToken)
+                        connectedNames.forEach { name ->
+                            if (localProfiles.none { it.displayName.equals(name, ignoreCase = true) }) {
+                                childDao.insert(ChildProfile(parentEmail = email, displayName = name))
+                            }
+                        }
+                        connectedNames.isNotEmpty()
+                    }
+                    if (hasChild && sessionManager.getActiveChildProfile() == null) {
+                        val profiles = withContext(Dispatchers.IO) {
+                            childDao.getChildProfilesForParent(email)
+                        }
+                        sessionManager.setActiveChildProfile(profiles.first().displayName)
+                    }
+                    onResult(true, hasChild, null)
+                } catch (error: Exception) {
+                    Log.e("AuthViewModel", "Unable to refresh linked child profiles.", error)
+                    onResult(false, false, error.message ?: "Unable to verify the parent account with the backend.")
                 }
-                val hasChild = profiles.isNotEmpty()
-                if (hasChild && sessionManager.getActiveChildProfile() == null) {
-                    sessionManager.setActiveChildProfile(profiles.first().displayName)
-                }
-                onResult(true, hasChild)
             }
         } else {
-            onResult(false, false)
+            onResult(false, false, null)
         }
     }
 
     fun login(email: String, password: String, onResult: (success: Boolean, error: String?) -> Unit) {
-        if (email.isBlank() || password.isBlank()) {
+        val normalizedEmail = email.trim().lowercase(Locale.ROOT)
+        if (normalizedEmail.isBlank() || password.isBlank()) {
             onResult(false, "Fields cannot be empty")
             return
         }
         viewModelScope.launch {
-            val account = withContext(Dispatchers.IO) {
-                parentDao.getParentAccount(email)
-            }
-            if (account == null) {
-                onResult(false, "Account not found")
-                return@launch
-            }
-            val hashed = PasswordHasher.hashPassword(password, account.salt)
-            if (hashed == account.passwordHash) {
-                sessionManager.loginParent(email)
+            try {
+                withContext(Dispatchers.IO) {
+                    val authSession = try {
+                        BackendAccountClient.login(normalizedEmail, password)
+                    } catch (error: BackendApiException) {
+                        if (error.statusCode != 401) throw error
+                        val localAccount = parentDao.getParentAccount(normalizedEmail)
+                        if (localAccount == null ||
+                            PasswordHasher.hashPassword(password, localAccount.salt) != localAccount.passwordHash
+                        ) {
+                            throw error
+                        }
+                        try {
+                            BackendAccountClient.register(normalizedEmail, password, "")
+                        } catch (registrationError: BackendApiException) {
+                            if (registrationError.statusCode != 409) throw registrationError
+                            BackendAccountClient.login(normalizedEmail, password)
+                        }
+                    }
+                    sessionManager.setAccessToken(authSession.accessToken)
+
+                    val salt = PasswordHasher.generateSalt()
+                    parentDao.insert(
+                        ParentAccount(
+                            normalizedEmail,
+                            PasswordHasher.hashPassword(password, salt),
+                            salt
+                        )
+                    )
+                    val remoteNames = BackendAccountClient.getChildProfiles(
+                        normalizedEmail,
+                        authSession.accessToken
+                    )
+                    val localProfiles = childDao.getChildProfilesForParent(normalizedEmail)
+                    remoteNames.forEach { name ->
+                        if (localProfiles.none { it.displayName.equals(name, ignoreCase = true) }) {
+                            childDao.insert(ChildProfile(parentEmail = normalizedEmail, displayName = name))
+                        }
+                    }
+                }
+                sessionManager.loginParent(normalizedEmail)
                 val profiles = withContext(Dispatchers.IO) {
-                    childDao.getChildProfilesForParent(email)
+                    childDao.getChildProfilesForParent(normalizedEmail)
                 }
-                if (profiles.isNotEmpty()) {
-                    sessionManager.setActiveChildProfile(profiles.first().displayName)
-                }
+                if (profiles.isNotEmpty()) sessionManager.setActiveChildProfile(profiles.first().displayName)
                 onResult(true, null)
-            } else {
-                onResult(false, "Invalid password")
+            } catch (error: Exception) {
+                onResult(false, error.message ?: "Unable to connect to the parent account service.")
             }
         }
     }
 
     fun signup(email: String, password: String, onResult: (success: Boolean, error: String?) -> Unit) {
-        if (email.isBlank() || password.isBlank()) {
-            onResult(false, "Fields cannot be empty")
+        val normalizedEmail = email.trim().lowercase(Locale.ROOT)
+        if (normalizedEmail.isBlank() || password.length < 6) {
+            onResult(false, "Enter a valid email and a password with at least 6 characters.")
             return
         }
         viewModelScope.launch {
-            val existing = withContext(Dispatchers.IO) {
-                parentDao.getParentAccount(email)
+            try {
+                withContext(Dispatchers.IO) {
+                    val authSession = BackendAccountClient.register(normalizedEmail, password, "")
+                    sessionManager.setAccessToken(authSession.accessToken)
+                    val salt = PasswordHasher.generateSalt()
+                    val passwordHash = PasswordHasher.hashPassword(password, salt)
+                    parentDao.insert(ParentAccount(normalizedEmail, passwordHash, salt))
+                }
+                sessionManager.loginParent(normalizedEmail)
+                onResult(true, null)
+            } catch (error: Exception) {
+                onResult(false, error.message ?: "Unable to create the parent account.")
             }
-            if (existing != null) {
-                onResult(false, "Account already exists")
-                return@launch
-            }
-            val salt = PasswordHasher.generateSalt()
-            val passwordHash = PasswordHasher.hashPassword(password, salt)
-            val account = ParentAccount(email, passwordHash, salt)
-            withContext(Dispatchers.IO) {
-                parentDao.insert(account)
-            }
-            sessionManager.loginParent(email)
-            onResult(true, null)
         }
     }
 
@@ -115,12 +173,21 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
-            val childProfile = ChildProfile(parentEmail = email, displayName = displayName)
-            withContext(Dispatchers.IO) {
-                childDao.insert(childProfile)
+            try {
+                withContext(Dispatchers.IO) {
+                    val accessToken = sessionManager.getAccessToken()
+                        ?: throw IllegalStateException("Please sign in again to refresh your secure session.")
+                    BackendAccountClient.createChildProfile(email, displayName, accessToken)
+                    val existing = childDao.getChildProfilesForParent(email)
+                    if (existing.none { it.displayName.equals(displayName, ignoreCase = true) }) {
+                        childDao.insert(ChildProfile(parentEmail = email, displayName = displayName))
+                    }
+                }
+                sessionManager.setActiveChildProfile(displayName.trim())
+                onResult(true, null)
+            } catch (error: Exception) {
+                onResult(false, error.message ?: "Unable to connect this child profile to the parent account.")
             }
-            sessionManager.setActiveChildProfile(displayName)
-            onResult(true, null)
         }
     }
 
@@ -149,135 +216,107 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _messages = MutableLiveData<List<Message>>(emptyList())
     val messages: LiveData<List<Message>> = _messages
 
-    private val _pendingApprovalState = MutableLiveData<Boolean>(false)
-    val pendingApprovalState: LiveData<Boolean> = _pendingApprovalState
-
     fun sendMessage(text: String) {
-        if (text.isBlank()) return
-
-        val score = Inference.scoreText(text)
-        val policy = RiskPolicyManager.evaluate(score)
-        val filteredText = applySafeSendFilter(text)
-        val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
-
-        val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
-        val displayStr = if (policy.requiresParentApproval) text else filteredText
-
-        val msg = Message(
-            id = UUID.randomUUID().toString(),
-            text = text,
-            sender = Sender.CHILD,
-            timestamp = System.currentTimeMillis(),
-            riskLevel = riskLevel,
-            displayText = displayStr,
-            isRevealed = true,
-            visibleToReceiver = !policy.requiresParentApproval
-        )
-        addMessage(msg)
-
-        if (policy.requiresParentApproval) {
-            _pendingApprovalState.value = true
-            PendingMessageManager.holdMessage(incidentId, 60000L) {
-                val defaultAction = if (score > 0.8f) RiskPolicyManager.TimeoutAction.BLOCK else RiskPolicyManager.TimeoutAction.ALLOW
-                ParentDecisionManager.handleTimeout(incidentId, defaultAction) { result ->
-                    _pendingApprovalState.postValue(false)
-                    viewModelScope.launch(Dispatchers.Main) {
-                        when (result) {
-                            ParentDecisionManager.DecisionResult.Allow -> updateMessageState(msg.id, filteredText, true, false)
-                            ParentDecisionManager.DecisionResult.Block -> updateMessageState(msg.id, text, false, false)
-                            else -> updateMessageState(msg.id, text, false, false)
-                        }
-                    }
-                }
-            }
-        }
-
-        IncidentManager.createAndSendIncident(
-            incidentId = incidentId,
-            type = "OUTGOING",
-            message = text,
-            riskScore = score,
-            riskLevel = policy.riskLevel,
-            category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
-            packageName = "com.childsafelens.demo",
-            status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
-            onDecisionReceived = { decision, guidance ->
-                PendingMessageManager.cancelTimeout(incidentId)
-                _pendingApprovalState.postValue(false)
-                val upperDecision = decision.uppercase()
-                viewModelScope.launch(Dispatchers.Main) {
-                    if (upperDecision in listOf("ALLOW", "SHOW")) {
-                        updateMessageState(msg.id, filteredText, true, false)
-                    } else if (upperDecision in listOf("BLOCK", "HIDE")) {
-                        // Outgoing block: stealth block (sender sees normal text, receiver gets nothing)
-                        updateMessageState(msg.id, text, false, false)
-                    } else if (upperDecision == "EDIT") {
-                        updateMessageState(msg.id, "$text ⚠️ (${guidance ?: "Please rephrase your message before sending."})", false, false)
-                    }
-                }
-            }
-        )
+        classifyMessage(text, Sender.CHILD, "OUTGOING")
     }
 
     fun injectPresetMessage(text: String) {
-        val score = Inference.scoreText(text)
-        val policy = RiskPolicyManager.evaluate(score)
-        val filteredText = applySafeSendFilter(text)
-        val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
-        
-        val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
-        val displayStr = if (policy.requiresParentApproval) text else filteredText
+        classifyMessage(text, Sender.SIMULATED_CONTACT, "INCOMING")
+    }
 
-        val msg = Message(
+    private fun classifyMessage(text: String, sender: Sender, type: String) {
+        if (text.isBlank()) return
+        val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
+        val message = Message(
             id = UUID.randomUUID().toString(),
             text = text,
-            sender = Sender.SIMULATED_CONTACT,
+            sender = sender,
             timestamp = System.currentTimeMillis(),
-            riskLevel = riskLevel,
-            displayText = displayStr,
-            isRevealed = true,
-            visibleToReceiver = !policy.requiresParentApproval
+            displayText = "",
+            isRevealed = false,
+            visibleToReceiver = false,
+            classificationStatus = "Checking backend"
         )
-        addMessage(msg)
+        addMessage(message)
 
-        if (policy.requiresParentApproval) {
-            _pendingApprovalState.value = true
-            PendingMessageManager.holdMessage(incidentId, 60000L) {
-                val defaultAction = if (score > 0.8f) RiskPolicyManager.TimeoutAction.BLOCK else RiskPolicyManager.TimeoutAction.ALLOW
-                ParentDecisionManager.handleTimeout(incidentId, defaultAction) { result ->
-                    _pendingApprovalState.postValue(false)
-                    viewModelScope.launch(Dispatchers.Main) {
-                        when (result) {
-                            ParentDecisionManager.DecisionResult.Allow -> updateMessageState(msg.id, filteredText, true, false)
-                            ParentDecisionManager.DecisionResult.Block -> updateMessageState(msg.id, "⚠️ You can't view this message", true, true)
-                            else -> updateMessageState(msg.id, "⚠️ You can't view this message", true, true)
-                        }
-                    }
-                }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = BackendClassifierClient.classify(text) { rechecked ->
+                applyClassificationResult(message, incidentId, type, text, rechecked)
+            }
+            withContext(Dispatchers.Main) {
+                applyClassificationResult(message, incidentId, type, text, result)
             }
         }
+    }
+
+    private fun applyClassificationResult(
+        message: Message,
+        incidentId: String,
+        type: String,
+        text: String,
+        result: ClassificationResult
+    ) {
+        if (result.offlineUnverified) {
+            setClassificationState(
+                message.id,
+                RiskLevel.PENDING,
+                "Offline / unverified (queued for recheck)",
+                "",
+                false
+            )
+            return
+        }
+
+        if (result.label == "Clean") {
+            setClassificationState(
+                message.id,
+                RiskLevel.SAFE,
+                if (result.developmentSimulation) "Development / simulation" else "Backend verified",
+                text,
+                true
+            )
+            return
+        }
+        if (!result.shouldCreateIncident) return
+
+        val score = result.riskScore
+        val policy = RiskPolicyManager.evaluateForClassification(score, result.label.orEmpty())
+        val filteredText = applySafeSendFilter(text)
+        val riskLevel = if (score > 0.8f) RiskLevel.HIGH
+            else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
+        setClassificationState(
+            message.id,
+            riskLevel,
+            if (result.developmentSimulation) "Development / simulation" else "Backend verified",
+            if (policy.requiresParentApproval) "" else filteredText,
+            !policy.requiresParentApproval
+        )
 
         IncidentManager.createAndSendIncident(
             incidentId = incidentId,
-            type = "INCOMING",
+            type = type,
             message = text,
             riskScore = score,
             riskLevel = policy.riskLevel,
-            category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
+            category = "potential_cyberbullying",
             packageName = "com.childsafelens.demo",
             status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
-            onDecisionReceived = { decision, guidance ->
-                PendingMessageManager.cancelTimeout(incidentId)
-                _pendingApprovalState.postValue(false)
-                val upperDecision = decision.uppercase()
+            onDecisionReceived = { decision, _ ->
                 viewModelScope.launch(Dispatchers.Main) {
-                    if (upperDecision in listOf("ALLOW", "SHOW")) {
-                        updateMessageState(msg.id, filteredText, true, false)
-                    } else if (upperDecision in listOf("BLOCK", "HIDE")) {
-                        // Incoming block: recipient sees "You can't view this message" overlay
-                        updateMessageState(msg.id, "⚠️ You can't view this message", true, true)
-                    } else if (upperDecision == "EDIT") {
-                        updateMessageState(msg.id, "$text ⚠️ (${guidance ?: "Please rephrase"})", false, false)
+                    when (decision.uppercase()) {
+                        "ALLOW", "SHOW" -> updateMessageState(message.id, filteredText, true, false)
+                        "BLOCK", "HIDE" -> updateMessageState(
+                            message.id,
+                            if (type == "INCOMING") "Message hidden by parent" else "Message was not sent",
+                            type == "INCOMING",
+                            type == "INCOMING"
+                        )
+                        "EDIT" -> updateMessageState(
+                            message.id,
+                            "Message requires rephrasing",
+                            false,
+                            false
+                        )
                     }
                 }
             }
@@ -308,6 +347,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _messages.value = updated
     }
 
+    private fun setClassificationState(
+        messageId: String,
+        riskLevel: RiskLevel,
+        classificationStatus: String,
+        displayText: String,
+        visibleToReceiver: Boolean
+    ) {
+        _messages.value = _messages.value.orEmpty().map { message ->
+            if (message.id == messageId) {
+                message.copy(
+                    riskLevel = riskLevel,
+                    classificationStatus = classificationStatus,
+                    displayText = displayText,
+                    visibleToReceiver = visibleToReceiver
+                )
+            } else {
+                message
+            }
+        }
+    }
+
     fun ignoreMessage(messageId: String) {}
 
     private fun addMessage(message: Message) {
@@ -332,137 +392,131 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
     private val _messages = MutableLiveData<List<Message>>(emptyList())
     val messages: LiveData<List<Message>> = _messages
 
-    private val _pendingApprovalState = MutableLiveData<Boolean>(false)
-    val pendingApprovalState: LiveData<Boolean> = _pendingApprovalState
-
     fun sendMessageAsChild(text: String) {
+        classifyMessage(text, Sender.CHILD, "OUTGOING")
+    }
+
+    fun sendMessageAsContact(text: String) {
+        classifyMessage(text, Sender.SIMULATED_CONTACT, "INCOMING")
+    }
+
+    private fun classifyMessage(text: String, sender: Sender, type: String) {
         if (text.isBlank()) return
-        val score = Inference.scoreText(text)
-        val policy = RiskPolicyManager.evaluate(score)
-        val filteredText = applySafeSendFilter(text)
         val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
-
-        val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
-        val displayStr = if (policy.requiresParentApproval) text else filteredText
-
-        val msg = Message(
+        val message = Message(
             id = UUID.randomUUID().toString(),
             text = text,
-            sender = Sender.CHILD,
+            sender = sender,
             timestamp = System.currentTimeMillis(),
-            riskLevel = riskLevel,
-            displayText = displayStr,
-            isRevealed = true,
-            visibleToReceiver = !policy.requiresParentApproval
+            displayText = "",
+            isRevealed = false,
+            visibleToReceiver = false,
+            classificationStatus = "Checking backend"
         )
-        addMessage(msg)
-
-        if (policy.requiresParentApproval) {
-            _pendingApprovalState.value = true
-            PendingMessageManager.holdMessage(incidentId, 60000L) {
-                val defaultAction = if (score > 0.8f) RiskPolicyManager.TimeoutAction.BLOCK else RiskPolicyManager.TimeoutAction.ALLOW
-                ParentDecisionManager.handleTimeout(incidentId, defaultAction) { result ->
-                    _pendingApprovalState.postValue(false)
-                    viewModelScope.launch(Dispatchers.Main) {
-                        when (result) {
-                            ParentDecisionManager.DecisionResult.Allow -> updateMessageState(msg.id, filteredText, true, false)
-                            ParentDecisionManager.DecisionResult.Block -> updateMessageState(msg.id, text, false, false)
-                            else -> updateMessageState(msg.id, text, false, false)
-                        }
-                    }
-                }
+        addMessage(message)
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = BackendClassifierClient.classify(text) { rechecked ->
+                applyClassificationResult(message, incidentId, type, text, rechecked)
+            }
+            withContext(Dispatchers.Main) {
+                applyClassificationResult(message, incidentId, type, text, result)
             }
         }
+    }
+
+    private fun applyClassificationResult(
+        message: Message,
+        incidentId: String,
+        type: String,
+        text: String,
+        result: ClassificationResult
+    ) {
+        if (result.offlineUnverified) {
+            setClassificationState(
+                message.id,
+                RiskLevel.PENDING,
+                "Offline / unverified (queued for recheck)",
+                "",
+                false
+            )
+            return
+        }
+
+        if (result.label == "Clean") {
+            setClassificationState(
+                message.id,
+                RiskLevel.SAFE,
+                if (result.developmentSimulation) "Development / simulation" else "Backend verified",
+                text,
+                true
+            )
+            return
+        }
+        if (!result.shouldCreateIncident) return
+
+        val score = result.riskScore
+        val policy = RiskPolicyManager.evaluateForClassification(score, result.label.orEmpty())
+        val filteredText = applySafeSendFilter(text)
+        val riskLevel = if (score > 0.8f) RiskLevel.HIGH
+            else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
+        setClassificationState(
+            message.id,
+            riskLevel,
+            if (result.developmentSimulation) "Development / simulation" else "Backend verified",
+            if (policy.requiresParentApproval) "" else filteredText,
+            !policy.requiresParentApproval
+        )
 
         IncidentManager.createAndSendIncident(
             incidentId = incidentId,
-            type = "OUTGOING",
+            type = type,
             message = text,
             riskScore = score,
             riskLevel = policy.riskLevel,
-            category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
+            category = "potential_cyberbullying",
             packageName = "com.childsafelens.demo",
             status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
-            onDecisionReceived = { decision, guidance ->
-                PendingMessageManager.cancelTimeout(incidentId)
-                _pendingApprovalState.postValue(false)
-                val upperDecision = decision.uppercase()
+            onDecisionReceived = { decision, _ ->
                 viewModelScope.launch(Dispatchers.Main) {
-                    if (upperDecision in listOf("ALLOW", "SHOW")) {
-                        updateMessageState(msg.id, filteredText, true, false)
-                    } else if (upperDecision in listOf("BLOCK", "HIDE")) {
-                        updateMessageState(msg.id, text, false, false)
-                    } else if (upperDecision == "EDIT") {
-                        updateMessageState(msg.id, "$text ⚠️ (${guidance ?: "Please rephrase your message before sending."})", false, false)
+                    when (decision.uppercase()) {
+                        "ALLOW", "SHOW" -> updateMessageState(message.id, filteredText, true, false)
+                        "BLOCK", "HIDE" -> updateMessageState(
+                            message.id,
+                            if (type == "INCOMING") "Message hidden by parent" else "Message was not sent",
+                            type == "INCOMING",
+                            type == "INCOMING"
+                        )
+                        "EDIT" -> updateMessageState(
+                            message.id,
+                            "Message requires rephrasing",
+                            false,
+                            false
+                        )
                     }
                 }
             }
         )
     }
 
-    fun sendMessageAsContact(text: String) {
-        if (text.isBlank()) return
-        val score = Inference.scoreText(text)
-        val policy = RiskPolicyManager.evaluate(score)
-        val filteredText = applySafeSendFilter(text)
-        val incidentId = "INC_${UUID.randomUUID().hashCode().toUInt().toString(16)}"
-
-        val riskLevel = if (score > 0.8f) RiskLevel.HIGH else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
-        val displayStr = if (policy.requiresParentApproval) text else filteredText
-
-        val msg = Message(
-            id = UUID.randomUUID().toString(),
-            text = text,
-            sender = Sender.SIMULATED_CONTACT,
-            timestamp = System.currentTimeMillis(),
-            riskLevel = riskLevel,
-            displayText = displayStr,
-            isRevealed = true,
-            visibleToReceiver = !policy.requiresParentApproval
-        )
-        addMessage(msg)
-
-        if (policy.requiresParentApproval) {
-            _pendingApprovalState.value = true
-            PendingMessageManager.holdMessage(incidentId, 60000L) {
-                val defaultAction = if (score > 0.8f) RiskPolicyManager.TimeoutAction.BLOCK else RiskPolicyManager.TimeoutAction.ALLOW
-                ParentDecisionManager.handleTimeout(incidentId, defaultAction) { result ->
-                    _pendingApprovalState.postValue(false)
-                    viewModelScope.launch(Dispatchers.Main) {
-                        when (result) {
-                            ParentDecisionManager.DecisionResult.Allow -> updateMessageState(msg.id, filteredText, true, false)
-                            ParentDecisionManager.DecisionResult.Block -> updateMessageState(msg.id, "⚠️ You can't view this message", true, true)
-                            else -> updateMessageState(msg.id, "⚠️ You can't view this message", true, true)
-                        }
-                    }
-                }
+    private fun setClassificationState(
+        messageId: String,
+        riskLevel: RiskLevel,
+        classificationStatus: String,
+        displayText: String,
+        visibleToReceiver: Boolean
+    ) {
+        _messages.value = _messages.value.orEmpty().map { message ->
+            if (message.id == messageId) {
+                message.copy(
+                    riskLevel = riskLevel,
+                    classificationStatus = classificationStatus,
+                    displayText = displayText,
+                    visibleToReceiver = visibleToReceiver
+                )
+            } else {
+                message
             }
         }
-
-        IncidentManager.createAndSendIncident(
-            incidentId = incidentId,
-            type = "INCOMING",
-            message = text,
-            riskScore = score,
-            riskLevel = policy.riskLevel,
-            category = if (policy.riskLevel == RiskPolicyManager.RiskLevel.LOW) "safe" else "potential_cyberbullying",
-            packageName = "com.childsafelens.demo",
-            status = if (policy.requiresParentApproval) "PENDING_PARENT_REVIEW" else "ALLOWED",
-            onDecisionReceived = { decision, guidance ->
-                PendingMessageManager.cancelTimeout(incidentId)
-                _pendingApprovalState.postValue(false)
-                val upperDecision = decision.uppercase()
-                viewModelScope.launch(Dispatchers.Main) {
-                    if (upperDecision in listOf("ALLOW", "SHOW")) {
-                        updateMessageState(msg.id, filteredText, true, false)
-                    } else if (upperDecision in listOf("BLOCK", "HIDE")) {
-                        updateMessageState(msg.id, "⚠️ You can't view this message", true, true)
-                    } else if (upperDecision == "EDIT") {
-                        updateMessageState(msg.id, "$text ⚠️ (${guidance ?: "Please rephrase"})", false, false)
-                    }
-                }
-            }
-        )
     }
 
     fun revealMessage(messageId: String) {

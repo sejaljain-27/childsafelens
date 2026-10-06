@@ -4,20 +4,26 @@ import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
+import {
+  authenticatedFetch,
+  hasParentSession,
+} from '../services/alertsService';
 
-const API_BASE_URL = "http://10.46.19.193:8001";
+const API_BASE_URL = typeof window !== 'undefined' && window.location && window.location.hostname
+  ? `http://${window.location.hostname}:8000`
+  : "http://localhost:8000";
 
 export default function SettingsScreen() {
   const router = useRouter();
   const getStoredEmail = () => {
-    if (typeof window !== 'undefined') {
+    if (hasParentSession()) {
       return localStorage.getItem('childsafelens_parent_email');
     }
     return null;
   };
 
-  const [parentEmail, setParentEmail] = useState<string>(
-    getStoredEmail() || 'parent@test.com'
+  const [parentEmail] = useState<string>(
+    getStoredEmail() || ''
   );
   const [mediumAction, setMediumAction] = useState('ALLOW');
   const [highAction, setHighAction] = useState('BLOCK');
@@ -30,14 +36,18 @@ export default function SettingsScreen() {
   // Notification Preferences State
   const [smsEnabled, setSmsEnabled] = useState(true);
   const [emailEnabled, setEmailEnabled] = useState(true);
-  const [smsNumber, setSmsNumber] = useState('+919876543210');
+  const [smsNumber, setSmsNumber] = useState('');
   const [emailAddress, setEmailAddress] = useState(parentEmail);
   const [highSms, setHighSms] = useState(true);
   const [criticalSms, setCriticalSms] = useState(true);
   const [criticalEmail, setCriticalEmail] = useState(true);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/settings`)
+    if (!parentEmail) {
+      router.replace('/');
+      return;
+    }
+    authenticatedFetch(`${API_BASE_URL}/settings`)
       .then(res => res.json())
       .then(data => {
         if (data) {
@@ -52,13 +62,13 @@ export default function SettingsScreen() {
       })
       .catch(err => console.error("Failed to load settings", err));
 
-    fetch(`${API_BASE_URL}/settings/notifications?parentEmail=${encodeURIComponent(parentEmail)}`)
+    authenticatedFetch(`${API_BASE_URL}/settings/notifications?parentEmail=${encodeURIComponent(parentEmail)}`)
       .then(res => res.json())
       .then(data => {
         if (data) {
           setSmsEnabled(data.smsEnabled !== false);
           setEmailEnabled(data.emailEnabled !== false);
-          setSmsNumber(data.smsNumber || '+919876543210');
+          setSmsNumber(data.smsNumber || '');
           setEmailAddress(data.emailAddress || parentEmail);
           setHighSms(data.highSmsEnabled !== false);
           setCriticalSms(data.criticalSmsEnabled !== false);
@@ -66,11 +76,11 @@ export default function SettingsScreen() {
         }
       })
       .catch(err => console.error("Failed to load notification settings", err));
-  }, [parentEmail]);
+  }, [parentEmail, router]);
 
   const saveSettings = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/settings`, {
+      const res = await authenticatedFetch(`${API_BASE_URL}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -84,7 +94,7 @@ export default function SettingsScreen() {
         })
       });
 
-      const resNotif = await fetch(`${API_BASE_URL}/settings/notifications`, {
+      const resNotif = await authenticatedFetch(`${API_BASE_URL}/settings/notifications`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -212,7 +222,7 @@ export default function SettingsScreen() {
               style={styles.input}
               value={smsNumber}
               onChangeText={setSmsNumber}
-              placeholder="+919876543210"
+              placeholder="Enter phone number"
               placeholderTextColor="#888"
               keyboardType="phone-pad"
             />
@@ -222,7 +232,7 @@ export default function SettingsScreen() {
               style={styles.input}
               value={emailAddress}
               onChangeText={setEmailAddress}
-              placeholder="parent@test.com"
+              placeholder="parent@example.com"
               placeholderTextColor="#888"
               autoCapitalize="none"
               keyboardType="email-address"
