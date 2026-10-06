@@ -69,6 +69,12 @@ const displayComponentValue = (
 const displayEvidenceCount = (value: number | null | undefined) =>
   typeof value === 'number' && Number.isFinite(value) ? String(value) : 'Not available';
 
+const displayModalityStatus = (status?: string | null) => {
+  if (status === 'available') return 'Available';
+  if (status === 'not_provided') return 'Not provided';
+  return status ?? 'Not available';
+};
+
 const displayResearchPercent = (value: number | null | undefined) =>
   typeof value === 'number' && Number.isFinite(value)
     ? `${(value * 100).toFixed(1)}%`
@@ -412,7 +418,13 @@ const DashboardScreen: React.FC = () => {
                             : typeof currentValue === 'number'
                               ? displayResearchPercent(currentValue)
                               : ['targeting', 'severity', 'multimodal', 'temporal', 'escalation', 'social_graph', 'historical'].includes(key)
-                                ? displayResearchPercent(component?.value)
+                                ? typeof component?.value === 'number'
+                                  ? displayResearchPercent(component.value)
+                                  : displayComponentValue(
+                                    component?.value,
+                                    component?.status,
+                                    component?.observed_evidence_count,
+                                  )
                             : displayComponentValue(
                               component?.value,
                               component?.status,
@@ -458,7 +470,7 @@ const DashboardScreen: React.FC = () => {
                               ? 'Analysis status: Completed using available text evidence. Image, audio, and video were skipped because they were not provided.'
                               : `Text: ${currentMessageAnalysis
                                 ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
-                                : component?.text_status === 'available' ? 'Available' : 'Not provided'} · Image: ${component?.image_status ?? 'Not provided'} · Audio: ${component?.audio_status ?? 'Not provided'} · Video: ${component?.video_status ?? 'Not provided'}`}
+                                : component?.text_status === 'available' ? 'Available' : 'Not provided'} · Image: ${displayModalityStatus(component?.image_status)} · Audio: ${displayModalityStatus(component?.audio_status)} · Video: ${displayModalityStatus(component?.video_status)}`}
                           </Text>
                         )}
                       </View>

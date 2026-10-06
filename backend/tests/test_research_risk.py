@@ -38,14 +38,15 @@ class ResearchRiskTests(unittest.TestCase):
             ["direct_mention", "child_name_reference", "reply_to_child"],
         )
 
-    def test_text_only_targeting_scores_only_the_available_text_signal(self):
+    def test_second_person_alone_does_not_confirm_targeting(self):
         result = targeting_evidence("You are so stupid")
 
-        self.assertEqual(result["status"], "computed")
+        self.assertEqual(result["status"], "insufficient_evidence")
         self.assertEqual(result["analysis_status"], "completed")
         self.assertIn("second_person_reference", result["available_signals"])
         self.assertEqual(result["supporting_evidence"], ["second_person_reference"])
-        self.assertEqual(result["score"], 1.0)
+        self.assertEqual(result["score_status"], "insufficient_evidence_to_confirm_target")
+        self.assertIsNone(result["score"])
 
     def test_targeting_score_normalizes_only_available_configured_signals(self):
         result = targeting_evidence(
@@ -101,7 +102,7 @@ class ResearchRiskTests(unittest.TestCase):
         self.assertEqual(result["analysis_status"], "completed")
         self.assertEqual(result["status"], "insufficient_evidence")
         self.assertEqual(result["indicators"], [])
-        self.assertEqual(result["score"], 0.0)
+        self.assertIsNone(result["score"])
 
     def test_severity_score_requires_explicit_evidence_and_configured_weights(self):
         env = {

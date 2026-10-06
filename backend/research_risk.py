@@ -235,7 +235,7 @@ def targeting_evidence(
     )
     normalized_weights = _normalized_weights(effective_weights, available) if available else None
     score = None
-    if normalized_weights is not None:
+    if normalized_weights is not None and direct_targeting_evidence:
         score = sum(
             normalized_weights[name] * float(value)
             for name, value in available.items()
@@ -244,9 +244,9 @@ def targeting_evidence(
         "status": (
             "computed"
             if score is not None
-            else "observed"
-            if supporting_evidence
             else "insufficient_evidence"
+            if not direct_targeting_evidence
+            else "observed"
         ),
         "analysis_status": "completed",
         "indicators": indicators,
@@ -256,9 +256,9 @@ def targeting_evidence(
         "score_status": (
             "computed_from_available_signals"
             if score is not None
-            else "weights_not_configured"
-            if available
             else "insufficient_evidence_to_confirm_target"
+            if not direct_targeting_evidence
+            else "weights_not_configured"
         ),
     }
 
@@ -305,8 +305,6 @@ def severity_evidence(
             for category in observed
         ) / len(observed)
         if observed and all(category in score_weights for category in observed)
-        else 0.0
-        if has_evidence_source
         else None
     )
     return {
@@ -1224,7 +1222,7 @@ def _research_state(
         "D": _observed_state_component(targeting_value, "targeting_score_unavailable"),
         "S": _observed_state_component(severity_value, "severity_score_unavailable"),
         "M": _observed_state_component(multimodal_value, "multimodal_score_unavailable"),
-        "R": _observed_state_component(
+        "T": _observed_state_component(
             temporal.get("value"),
             str(temporal.get("status", "temporal_risk_unavailable")),
         ),
@@ -1247,9 +1245,9 @@ def _research_state(
     )
     return {
         "status": status,
-        "component_order": ["P", "D", "S", "M", "R", "E", "G", "H"],
+        "component_order": ["P", "D", "S", "M", "T", "E", "G", "H"],
         "components": values,
-        "vector": [values[name]["value"] for name in ("P", "D", "S", "M", "R", "E", "G", "H")],
+        "vector": [values[name]["value"] for name in ("P", "D", "S", "M", "T", "E", "G", "H")],
     }
 
 
@@ -1277,6 +1275,11 @@ def _targeting_score_from_evidence(evidence: Mapping[str, Any]) -> float | None:
                 name: True for name in supporting if name in TARGETING_FEATURES
             }
     if not available:
+        return None
+    if not any(
+        name in TARGETING_SIGNALS and value is True
+        for name, value in available.items()
+    ):
         return None
     weights = _research_weights("targeting", TARGETING_RESEARCH_WEIGHTS)
     normalized = _normalized_weights(
@@ -1358,12 +1361,6 @@ def child_risk_assessment(
         ),
         default={},
     )
-    latest_targeting = latest_incident.get("targeting_evidence", {})
-    if not isinstance(latest_targeting, Mapping):
-        latest_targeting = {}
-    latest_severity = latest_incident.get("severity_evidence", {})
-    if not isinstance(latest_severity, Mapping):
-        latest_severity = {}
     current_analysis = (
         current_message
         if current_message
@@ -1388,12 +1385,12 @@ def child_risk_assessment(
     targeting_score = (
         _current_targeting_score(current_analysis)
         if current_analysis is not None
-        else _targeting_score_from_evidence(latest_targeting)
+        else None
     )
     severity_evidence = (
         current_analysis.get("severity_evidence", [])
         if current_analysis is not None
-        else latest_severity.get("indicators", [])
+        else []
     )
     if not isinstance(severity_evidence, list):
         severity_evidence = []
@@ -1404,7 +1401,7 @@ def child_risk_assessment(
     severity_score = (
         current_analysis.get("severity_score")
         if current_analysis is not None
-        else _incident_severity_score(latest_incident)
+        else None
     )
     if (
         current_analysis is not None
@@ -1416,14 +1413,14 @@ def child_risk_assessment(
                 for name in set(severity_evidence)
             ) / len(set(severity_evidence))
             if severity_evidence
-            else 0.0
+            else None
         )
     if severity_score is not None:
         severity_score = _bounded_value("severity_score", float(severity_score))
     targeting_evidence = (
         current_analysis.get("targeting_evidence", [])
         if current_analysis is not None
-        else latest_targeting.get("supporting_evidence", [])
+        else []
     )
     if not isinstance(targeting_evidence, list):
         targeting_evidence = []
@@ -1503,43 +1500,6 @@ def child_risk_assessment(
         "G": graph.get("graph_score"),
         "H": historical_component.get("value"),
     }
-    current_statuses = {
-        "P": classifier_component_status,
-        "D": targeting_status,
-        "S": severity_status,
-        "M": (
-            "computed_from_available_text"
-            if multimodal_score is not None
-            else "text_evidence_unavailable"
-        ),
-        "T": str(temporal_component.get("status", "temporal_unavailable")),
-        "E": str(escalation_component.get("status", "escalation_unavailable")),
-        "G": str(graph.get("graph_score_status", "social_graph_unavailable")),
-        "H": str(historical_component.get("status", "historical_unavailable")),
-    }
-    research_state["components"] = {
-        name: _observed_state_component(
-            current_values[name],
-            current_statuses[name],
-        )
-        for name in FUSION_FEATURES
-    }
-    research_state["component_order"] = list(FUSION_FEATURES)
-    available_count = sum(
-        item["value"] is not None
-        for item in research_state["components"].values()
-    )
-    research_state["status"] = (
-        "computed"
-        if available_count == len(FUSION_FEATURES)
-        else "partially_available"
-        if available_count
-        else "insufficient_evidence"
-    )
-    research_state["vector"] = [
-        research_state["components"][name]["value"]
-        for name in FUSION_FEATURES
-    ]
     latest_incident = max(
         records,
         key=lambda incident: (
@@ -1549,6 +1509,18 @@ def child_risk_assessment(
         ),
         default={},
     )
+    latest_targeting = latest_incident.get("targeting_evidence", {})
+    if not isinstance(latest_targeting, Mapping):
+        latest_targeting = {}
+    latest_severity = latest_incident.get("severity_evidence", {})
+    if not isinstance(latest_severity, Mapping):
+        latest_severity = {}
+    latest_targeting_evidence = latest_targeting.get("supporting_evidence", [])
+    if not isinstance(latest_targeting_evidence, list):
+        latest_targeting_evidence = []
+    latest_severity_evidence = latest_severity.get("indicators", [])
+    if not isinstance(latest_severity_evidence, list):
+        latest_severity_evidence = []
     risk_fusion_features = {
         "incident_score": latest_incident.get("incident_score"),
         "temporal_risk": temporal_component.get("value"),
@@ -1602,10 +1574,10 @@ def child_risk_assessment(
                 "classification", latest_classifier_result.get("label")
             ),
             "category": latest_incident.get("category"),
-            "classifier_probability": classifier_probability,
+            "classifier_probability": stored_classifier_probability(latest_incident),
             "model_version": latest_model_version,
-            "targeting_evidence": targeting_evidence,
-            "severity_evidence": severity_evidence,
+            "targeting_evidence": latest_targeting_evidence,
+            "severity_evidence": latest_severity_evidence,
         } if latest_incident else None,
         "current_message": {
             "classification": current_analysis.get("classification"),
@@ -1687,8 +1659,6 @@ def child_risk_assessment(
                 "scope": (
                     "current_message"
                     if current_analysis is not None
-                    else "latest_stored_message"
-                    if latest_incident
                     else "unavailable"
                 ),
             },
@@ -1700,8 +1670,6 @@ def child_risk_assessment(
                 "scope": (
                     "current_message"
                     if current_analysis is not None
-                    else "latest_stored_message"
-                    if latest_incident
                     else "unavailable"
                 ),
             },

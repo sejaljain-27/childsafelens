@@ -295,7 +295,11 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertFalse(result.incident_created)
         self.assertEqual(assessment["incident_count"], 0)
         self.assertEqual(assessment["current_message"]["classification"], "Clean")
-        self.assertEqual(assessment["components"]["severity"]["value"], 0.0)
+        self.assertIsNone(assessment["components"]["severity"]["value"])
+        self.assertEqual(
+            assessment["components"]["severity"]["status"],
+            "insufficient_evidence",
+        )
         self.assertEqual(assessment["components"]["classifier_probability"]["value"], probability)
         self.assertEqual(assessment["multimodal_evidence"]["text"], "available")
         self.assertEqual(assessment["multimodal_evidence"]["image"], "not_provided")
@@ -792,7 +796,10 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(response["status"], "ok")
         self.assertEqual(stored["classifierOutput"]["output"]["label"], "Bullying")
         self.assertEqual(stored["targeting_evidence"]["analysis_status"], "completed")
-        self.assertEqual(stored["targeting_evidence"]["status"], "computed")
+        self.assertEqual(
+            stored["targeting_evidence"]["status"],
+            "insufficient_evidence",
+        )
         self.assertEqual(
             stored["targeting_evidence"]["indicators"]["second_person_reference"],
             True,
@@ -803,16 +810,56 @@ class ResearchRouteTests(unittest.TestCase):
             stored["severity_evidence"]["textual_evidence"],
             {"insult": ["stupid"]},
         )
-        assessment = main.get_child_risk("child-1", "parent@test.com")
+        historical_assessment = main.get_child_risk("child-1", "parent@test.com")
+        self.assertIsNone(historical_assessment["components"]["targeting"]["value"])
+        self.assertEqual(
+            historical_assessment["components"]["targeting"]["status"],
+            "insufficient_evidence",
+        )
+        self.assertIsNone(historical_assessment["components"]["severity"]["value"])
+        self.assertEqual(
+            historical_assessment["components"]["severity"]["status"],
+            "insufficient_evidence",
+        )
+        self.assertEqual(
+            historical_assessment["latest_incident"]["severity_evidence"],
+            ["insult"],
+        )
+
+        current_analysis = {
+            "classification": "Clean",
+            "probability": 0.02,
+            "category": None,
+            "model_version": "cyberbullying-cascade-v4",
+            "text_status": "available",
+            "targeting_evidence": [],
+            "severity_evidence": [],
+            "targeting_score": None,
+            "severity_score": 0.0,
+            "targeting_signals": {},
+        }
+        assessment = main.get_child_risk(
+            "child-1",
+            "parent@test.com",
+            currentAnalysis=json.dumps(current_analysis),
+        )
         self.assertEqual(
             assessment["components"]["targeting"]["status"],
-            "computed",
+            "insufficient_evidence",
         )
         self.assertEqual(
             assessment["components"]["severity"]["status"],
             "computed",
         )
-        self.assertEqual(assessment["components"]["severity"]["evidence"], ["insult"])
+        self.assertEqual(assessment["components"]["severity"]["evidence"], [])
+        self.assertEqual(
+            assessment["components"]["severity"]["scope"],
+            "current_message",
+        )
+        self.assertEqual(
+            assessment["latest_incident"]["severity_evidence"],
+            ["insult"],
+        )
         self.assertEqual(assessment["multimodal_evidence"]["text"], "available")
         self.assertEqual(assessment["multimodal_evidence"]["image"], "not_provided")
         self.assertEqual(assessment["multimodal_evidence"]["audio"], "not_provided")
@@ -866,7 +913,7 @@ class ResearchRouteTests(unittest.TestCase):
                     stored["incident_score_status"],
                     "insufficient_component_evidence",
                 )
-                self.assertNotIn("targeting", stored["incident_score_missing_components"])
+                self.assertIn("targeting", stored["incident_score_missing_components"])
                 self.assertNotIn("severity", stored["incident_score_missing_components"])
                 self.assertIn("multimodal", stored["incident_score_missing_components"])
 
@@ -901,12 +948,14 @@ class ResearchRouteTests(unittest.TestCase):
         self.assertEqual(assessment["severity_evidence_count"], 1)
         self.assertEqual(
             assessment["components"]["targeting"]["status"],
-            "computed",
+            "insufficient_evidence",
         )
         self.assertEqual(
             assessment["components"]["severity"]["status"],
-            "computed",
+            "insufficient_evidence",
         )
+        self.assertIsNone(assessment["components"]["targeting"]["value"])
+        self.assertIsNone(assessment["components"]["severity"]["value"])
         self.assertEqual(
             assessment["risk_method"],
             "research_derived_deterministic",
