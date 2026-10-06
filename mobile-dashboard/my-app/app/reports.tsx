@@ -5,6 +5,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
+  API_BASE_URL,
   fetchResearchCapabilities,
   fetchResearchRisk,
   authenticatedFetch,
@@ -18,10 +19,6 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const isSmallScreen = SCREEN_WIDTH < 380;
 const isMediumScreen = SCREEN_WIDTH >= 380 && SCREEN_WIDTH < 768;
 const isLargeScreen = SCREEN_WIDTH >= 768;
-
-const API_BASE_URL = typeof window !== 'undefined' && window.location && window.location.hostname
-  ? `http://${window.location.hostname}:8000`
-  : "http://localhost:8000";
 
 interface AnalyticsData {
   total_incidents: number;
@@ -72,6 +69,8 @@ export default function ReportsScreen() {
     ]).then(([risk, capabilities]) => {
       setResearchRisk(risk);
       setResearchCapabilities(capabilities);
+    }).catch(error => {
+      console.error('Failed to load research report data', error);
     }).finally(() => setResearchLoaded(true));
 
     authenticatedFetch(`${API_BASE_URL}/analytics?${params.toString()}`)
@@ -194,7 +193,6 @@ export default function ReportsScreen() {
       detail: 'SHAP values are shown only when an actual trained risk-fusion model is available.',
     },
   ];
-
   return (
     <LinearGradient 
       colors={['#FFE5F1', '#E0F2F1', '#F0F4C3', '#FFF8E1', '#FFE0E9']} 

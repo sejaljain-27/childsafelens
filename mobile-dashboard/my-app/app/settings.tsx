@@ -5,13 +5,10 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
+  API_BASE_URL,
   authenticatedFetch,
   hasParentSession,
 } from '../services/alertsService';
-
-const API_BASE_URL = typeof window !== 'undefined' && window.location && window.location.hostname
-  ? `http://${window.location.hostname}:8000`
-  : "http://localhost:8000";
 
 export default function SettingsScreen() {
   const router = useRouter();

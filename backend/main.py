@@ -721,7 +721,7 @@ def get_incidents(
         if account_store.normalize_email(incident.get("parentEmail", "")) == owner_email
     ]
     if childName:
-        results = [i for i in results if i.get("childName", "").lower() == childName.lower()]
+        results = [i for i in results if i.get("childName", "").strip().lower() == childName.strip().lower()]
     return results
 
 
