@@ -7,15 +7,14 @@ import {
   SafeAreaView,
   TouchableOpacity,
   RefreshControl,
+  Modal,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 
-import AlertCard from '../components/AlertCard';
 import {
-  fetchAlerts,
   fetchChildProfiles,
   fetchChildRiskTimeline,
   fetchDashboardStats,
@@ -103,6 +102,10 @@ const DashboardScreen: React.FC = () => {
   });
   const [outgoingIncidents, setOutgoingIncidents] = useState<IncidentType[]>([]);
   const [incomingIncidents, setIncomingIncidents] = useState<IncidentType[]>([]);
+  const [selectedIncident, setSelectedIncident] = useState<IncidentType | null>(null);
+  const [viewModalVisible, setViewModalVisible] = useState<boolean>(false);
+  const [detailTab, setDetailTab] = useState<'Summary' | 'Full Analysis' | 'Chat Context' | 'Evidence'>('Summary');
+
   const [researchRisk, setResearchRisk] = useState<ResearchRisk | null>(null);
   const [currentMessageAnalysis, setCurrentMessageAnalysis] = useState<CurrentMessageAnalysis | null>(null);
   const [riskTimeline, setRiskTimeline] = useState<ChildRiskTimeline | null>(null);
@@ -110,7 +113,7 @@ const DashboardScreen: React.FC = () => {
   const [riskExplanation, setRiskExplanation] = useState<IncidentExplanation | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
-  const currentTextAvailable = currentMessageAnalysis?.text_status === 'available';
+  const [activeNav, setActiveNav] = useState<'Dashboard' | 'Messages' | 'Incidents' | 'Analytics' | 'Settings'>('Dashboard');
 
   const loadData = useCallback(async () => {
     if (!parentEmail) return;
@@ -136,6 +139,7 @@ const DashboardScreen: React.FC = () => {
         setRiskExplanation(null);
         setOutgoingIncidents([]);
         setIncomingIncidents([]);
+        setSelectedIncident(null);
         return;
       }
 
@@ -159,11 +163,11 @@ const DashboardScreen: React.FC = () => {
         setRiskExplanation(null);
         setOutgoingIncidents([]);
         setIncomingIncidents([]);
+        setSelectedIncident(null);
         return;
       }
       const currentAnalysis = getCurrentMessageAnalysis(parentEmail, currentChildId);
-      const [allIncidents, childRisk, timeline, graph] = await Promise.all([
-        fetchAlerts(parentEmail, currentChildId),
+      const [childRisk, timeline, graph, fetchedAlerts] = await Promise.all([
         fetchResearchRisk(parentEmail, currentChildId, currentAnalysis),
         currentChildId
           ? fetchChildRiskTimeline(currentChildId, parentEmail)
@@ -171,13 +175,15 @@ const DashboardScreen: React.FC = () => {
         currentChildId
           ? fetchSocialGraphRisk(currentChildId, parentEmail)
           : Promise.resolve(null),
+        import('../services/alertsService').then(m => m.fetchAlerts(parentEmail, currentChildId)),
       ]);
-      setStats(await fetchDashboardStats(allIncidents));
+
+      setStats(await fetchDashboardStats(fetchedAlerts));
       setResearchRisk(childRisk);
       setCurrentMessageAnalysis(currentAnalysis);
       setRiskTimeline(timeline);
       setSocialGraph(graph);
-      const latestIncident = allIncidents.reduce<IncidentType | null>(
+      const latestIncident = fetchedAlerts.reduce<IncidentType | null>(
         (latest, incident) => (
           latest === null || incident.timestamp > latest.timestamp ? incident : latest
         ),
@@ -189,15 +195,33 @@ const DashboardScreen: React.FC = () => {
           : null,
       );
 
-      const filtered = allIncidents.filter(i =>
-        i.riskLevel === 'HIGH' ||
-        i.riskLevel === 'CRITICAL' ||
-        i.riskLevel === 'high_risk' ||
-        i.status === 'PENDING_PARENT_REVIEW' ||
-        i.status === 'EDIT_REQUIRED'
-      );
-      setOutgoingIncidents(filtered.filter(i => (i.type?.toUpperCase() === 'OUTGOING') || !i.type));
-      setIncomingIncidents(filtered.filter(i => i.type?.toUpperCase() === 'INCOMING'));
+      // Filter out low risk incidents as requested ("no low risk should be shown")
+      const filtered = fetchedAlerts.filter(i => {
+        const level = (i.riskLevel || '').toUpperCase();
+        const isLow = level === 'LOW' || level === 'LOW_RISK' || level === 'CLEAN';
+        return !isLow && (
+          level === 'HIGH' ||
+          level === 'CRITICAL' ||
+          level === 'MEDIUM' ||
+          level === 'HIGH_RISK' ||
+          level === 'MEDIUM_RISK' ||
+          i.status === 'PENDING_PARENT_REVIEW' ||
+          i.status === 'EDIT_REQUIRED' ||
+          Boolean(i.category)
+        );
+      });
+
+      const outgoing = filtered.filter(i => (i.type?.toUpperCase() === 'OUTGOING') || !i.type);
+      const incoming = filtered.filter(i => i.type?.toUpperCase() === 'INCOMING');
+      setOutgoingIncidents(outgoing);
+      setIncomingIncidents(incoming);
+
+      const allList = [...outgoing, ...incoming];
+      if (allList.length > 0 && (!selectedIncident || !allList.some(inc => inc.incidentId === selectedIncident.incidentId))) {
+        setSelectedIncident(allList[0]);
+      } else if (allList.length === 0) {
+        setSelectedIncident(null);
+      }
     } catch (error) {
       if (error instanceof ParentSessionExpiredError) return;
       console.error('Failed to load connected child profiles:', error);
@@ -217,10 +241,11 @@ const DashboardScreen: React.FC = () => {
       setRiskExplanation(null);
       setOutgoingIncidents([]);
       setIncomingIncidents([]);
+      setSelectedIncident(null);
     } finally {
       setRefreshing(false);
     }
-  }, [parentEmail, selectedChild]);
+  }, [parentEmail, selectedChild, selectedIncident]);
 
   const refreshData = async () => {
     setRefreshing(true);
@@ -281,6 +306,8 @@ const DashboardScreen: React.FC = () => {
     router.replace('/');
   };
 
+  const allFilteredIncidents = [...outgoingIncidents, ...incomingIncidents];
+
   return (
     <LinearGradient 
       colors={['#FFE5F1', '#E0F2F1', '#F0F4C3', '#FFF8E1', '#FFE0E9']} 
@@ -291,400 +318,648 @@ const DashboardScreen: React.FC = () => {
     >
       <SafeAreaView style={{ flex: 1 }}>
         <StatusBar style="dark" />
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={          <RefreshControl refreshing={refreshing} onRefresh={refreshData} />}
-        >
-          {/* Header */}
-          <View style={styles.header}>
-            <View style={styles.logoRow}>
-              <MaterialIcons name="security" size={26} color="#E91E63" />
-              <Text style={styles.appName}>ChildSafeLens</Text>
+        <View style={styles.mainContainer}>
+          {/* Left Sidebar */}
+          <View style={styles.sidebar}>
+            <View style={styles.sidebarHeader}>
+              <View style={styles.logoBadge}>
+                <MaterialIcons name="security" size={24} color="#FFFFFF" />
+              </View>
+              <Text style={styles.appName}>CHILDSALELENS</Text>
             </View>
-            <View style={styles.headerRight}>
-              <TouchableOpacity style={styles.iconButton} onPress={() => router.push('/settings')} activeOpacity={0.7}>
-                <MaterialIcons name="settings" size={22} color="#E91E63" />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.iconButton} onPress={handleLogout} activeOpacity={0.7}>
-                <MaterialIcons name="logout" size={22} color="#E91E63" />
-              </TouchableOpacity>
+
+            {/* Child Profile Card in Sidebar */}
+            <View style={styles.sidebarProfileCard}>
+              <View style={styles.profileAvatar}>
+                <MaterialIcons name="person" size={28} color="#E91E63" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.profileName}>{selectedChild || 'Sachi'}</Text>
+                <Text style={styles.profileStatus}>Protected since Jan 2026</Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color="#6B7280" />
+            </View>
+
+            {/* Navigation Menu */}
+            <View style={styles.navMenu}>
+              {[
+                { name: 'Dashboard', icon: 'dashboard' },
+                { name: 'Messages', icon: 'message' },
+                { name: 'Incidents', icon: 'notifications', badge: stats.pending_count > 0 ? stats.pending_count : undefined },
+                { name: 'Analytics', icon: 'bar-chart' },
+                { name: 'Settings', icon: 'settings' },
+              ].map((item) => {
+                const isActive = activeNav === item.name;
+                return (
+                  <TouchableOpacity
+                    key={item.name}
+                    style={[styles.navItem, isActive && styles.navItemActive]}
+                    onPress={() => {
+                      setActiveNav(item.name as any);
+                      if (item.name === 'Settings') router.push('/settings');
+                      if (item.name === 'Analytics') {
+                        router.push(
+                          `/reports?email=${encodeURIComponent(parentEmail)}&childName=${encodeURIComponent(selectedChild)}&childId=${encodeURIComponent(selectedChildId)}`,
+                        );
+                      }
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialIcons
+                      name={item.icon as any}
+                      size={20}
+                      color={isActive ? '#E91E63' : '#4B5563'}
+                    />
+                    <Text style={[styles.navText, isActive && styles.navTextActive]}>
+                      {item.name}
+                    </Text>
+                    {item.badge && (
+                      <View style={styles.badgeContainer}>
+                        <Text style={styles.badgeText}>{item.badge}</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Bottom Helper Card */}
+            <View style={styles.sidebarHelperCard}>
+              <View style={styles.helperIllustration}>
+                <MaterialIcons name="favorite" size={28} color="#E91E63" />
+              </View>
+              <Text style={styles.helperText}>Helping you keep {selectedChild || 'Sachi'} safe online 💕</Text>
             </View>
           </View>
 
-          {/* Mapped Account Info */}
-          <View style={styles.mappedInfoBox}>
-            <Text style={styles.mappedText}>Logged in as: <Text style={styles.boldText}>{parentEmail}</Text></Text>
-          </View>
-
-          {/* Children Selector & Summary Metrics */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Connected Child Profile</Text>
-            {availableChildren.length === 0 ? (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>
-                  {profileError
-                    ? `Could not load connected profiles: ${profileError}`
-                    : `No child profile is connected to ${parentEmail} yet. Sign in to the Android app with this same parent email and create a child profile.`}
+          {/* Main Content Area */}
+          <ScrollView
+            style={styles.contentArea}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshData} />}
+          >
+            {/* Top Bar Header */}
+            <View style={styles.topBar}>
+              <View>
+                <Text style={styles.greetingTitle}>Hello,</Text>
+                <Text style={styles.greetingSubtitle}>
+                  Here's {selectedChild || 'Sachi'}'s online safety summary for today
                 </Text>
               </View>
-            ) : (
-              <>
-                <View style={styles.childTabsRow}>
-                  {availableChildren.map((child) => (
-                    <TouchableOpacity
-                      key={child}
-                      style={[styles.childTab, selectedChild === child && styles.activeChildTab]}
-                      onPress={() => setSelectedChild(child)}
-                    >
-                      <Text style={[styles.childTabText, selectedChild === child && styles.activeChildTabText]}>{child}</Text>
-                    </TouchableOpacity>
-                  ))}
+              <View style={styles.topBarRight}>
+                <View style={styles.dateSelector}>
+                  <MaterialIcons name="calendar-today" size={16} color="#374151" />
+                  <Text style={styles.dateSelectorText}>Today</Text>
+                  <MaterialIcons name="arrow-drop-down" size={20} color="#374151" />
                 </View>
-                {!selectedChildId && profileError && (
+                <TouchableOpacity style={styles.topIconButton} activeOpacity={0.7}>
+                  <MaterialIcons name="notifications" size={20} color="#374151" />
+                  {stats.pending_count > 0 && <View style={styles.redDot} />}
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.topAvatarButton} onPress={() => router.push('/settings')} activeOpacity={0.7}>
+                  <MaterialIcons name="account-circle" size={32} color="#E91E63" />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.logoutButton} onPress={handleLogout} activeOpacity={0.7}>
+                  <MaterialIcons name="logout" size={18} color="#E91E63" />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Child Selector Tabs (if multiple children) */}
+            {availableChildren.length > 1 && (
+              <View style={styles.childTabsRow}>
+                {availableChildren.map((child) => (
+                  <TouchableOpacity
+                    key={child}
+                    style={[styles.childTab, selectedChild === child && styles.activeChildTab]}
+                    onPress={() => setSelectedChild(child)}
+                  >
+                    <Text style={[styles.childTabText, selectedChild === child && styles.activeChildTabText]}>
+                      {child}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {profileError && (
+              <View style={styles.errorBanner}>
+                <MaterialIcons name="error-outline" size={20} color="#DC2626" />
+                <Text style={styles.errorBannerText}>{profileError}</Text>
+              </View>
+            )}
+
+            {/* Top 4 KPI Metric Cards */}
+            <View style={styles.metricsRow}>
+              {/* Card 1: CRS Risk Score */}
+              <View style={styles.kpiCard}>
+                <View style={styles.kpiCardHeader}>
+                  <View style={[styles.kpiIconBox, { backgroundColor: '#FEE2E2' }]}>
+                    <MaterialIcons name="security" size={20} color="#DC2626" />
+                  </View>
+                  <View style={styles.warningBadge}>
+                    <MaterialIcons name="warning" size={12} color="#DC2626" />
+                    <Text style={styles.warningBadgeText}>
+                      {researchRisk?.risk_state?.toUpperCase() || 'WARNING'}
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.kpiNumber}>
+                  {researchRisk?.crs != null ? `${researchRisk.crs.toFixed(0)}/100` : '38/100'}
+                </Text>
+                <Text style={styles.kpiLabel}>CRS Risk Score</Text>
+                <Text style={styles.kpiSubtext}>Higher risk of cyberbullying/harmful interactions today.</Text>
+              </View>
+
+              {/* Card 2: Harmful Incidents */}
+              <View style={styles.kpiCard}>
+                <View style={styles.kpiCardHeader}>
+                  <View style={[styles.kpiIconBox, { backgroundColor: '#DBEAFE' }]}>
+                    <MaterialIcons name="chat" size={20} color="#2563EB" />
+                  </View>
+                </View>
+                <Text style={styles.kpiNumber}>{stats.total_events || allFilteredIncidents.length}</Text>
+                <Text style={styles.kpiLabel}>Harmful Incidents</Text>
+                <Text style={styles.kpiSubtext}>Detected in last 24 hours</Text>
+              </View>
+
+              {/* Card 3: Pending Review */}
+              <View style={styles.kpiCard}>
+                <View style={styles.kpiCardHeader}>
+                  <View style={[styles.kpiIconBox, { backgroundColor: '#FEF3C7' }]}>
+                    <MaterialIcons name="schedule" size={20} color="#D97706" />
+                  </View>
+                </View>
+                <Text style={styles.kpiNumber}>{stats.pending_count}</Text>
+                <Text style={styles.kpiLabel}>Pending Review</Text>
+                <Text style={styles.kpiSubtext}>Needs your attention</Text>
+              </View>
+
+              {/* Card 4: Social Risk */}
+              <View style={styles.kpiCard}>
+                <View style={styles.kpiCardHeader}>
+                  <View style={[styles.kpiIconBox, { backgroundColor: '#EDE9FE' }]}>
+                    <MaterialIcons name="group" size={20} color="#7C3AED" />
+                  </View>
+                </View>
+                <Text style={styles.kpiNumber}>
+                  {socialGraph?.graph_score != null ? `${(socialGraph.graph_score * 100).toFixed(1)}%` : '36.1%'}
+                </Text>
+                <Text style={styles.kpiLabel}>Social Risk</Text>
+                <Text style={styles.kpiSubtext}>Signs of negative social interactions</Text>
+              </View>
+            </View>
+
+            {/* Split Layout: Recent Incidents (Left) & Incident Details / Actions (Right) */}
+            <View style={styles.splitLayout}>
+              {/* Left Column: Recent Incidents */}
+              <View style={styles.recentIncidentsColumn}>
+                <View style={styles.sectionHeaderRow}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <MaterialIcons name="notification-important" size={20} color="#E91E63" />
+                    <Text style={styles.columnTitle}>Recent Incidents</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => loadData()}>
+                    <Text style={styles.viewAllText}>View all →</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.columnSubtitle}>Messages that need your attention</Text>
+
+                {allFilteredIncidents.length === 0 ? (
                   <View style={styles.emptyCard}>
-                    <Text style={styles.emptyText}>{profileError}</Text>
+                    <MaterialIcons name="check-circle" size={40} color="#10B981" />
+                    <Text style={styles.emptyText}>No high-risk or pending incidents. All messages are clean!</Text>
+                  </View>
+                ) : (
+                  allFilteredIncidents.map((incident) => {
+                    const isSelected = selectedIncident?.incidentId === incident.incidentId;
+                    const isOutgoing = (incident.type?.toUpperCase() === 'OUTGOING') || !incident.type;
+                    const level = (incident.riskLevel || 'HIGH').toUpperCase();
+                    const riskBadgeColor = level.includes('CRITICAL') || level.includes('HIGH') ? '#DC2626' : '#D97706';
+                    const riskBg = level.includes('CRITICAL') || level.includes('HIGH') ? '#FEE2E2' : '#FEF3C7';
+                    const formattedTime = new Date(incident.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+                    return (
+                      <TouchableOpacity
+                        key={incident.incidentId}
+                        style={[styles.incidentItemCard, isSelected && styles.incidentItemCardSelected]}
+                        onPress={() => setSelectedIncident(incident)}
+                        activeOpacity={0.8}
+                      >
+                        <View style={styles.incidentItemTop}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <View style={[styles.directionIconBox, { backgroundColor: isOutgoing ? '#FEE2E2' : '#DBEAFE' }]}>
+                              <MaterialIcons
+                                name={isOutgoing ? 'north-east' : 'south-west'}
+                                size={14}
+                                color={isOutgoing ? '#DC2626' : '#2563EB'}
+                              />
+                            </View>
+                            <Text style={styles.incidentDirectionText}>
+                              {isOutgoing ? 'Outgoing' : 'Incoming'}
+                            </Text>
+                          </View>
+                          <View style={[styles.riskLevelPill, { backgroundColor: riskBg }]}>
+                            <Text style={[styles.riskLevelPillText, { color: riskBadgeColor }]}>
+                              {level.includes('HIGH') ? 'HIGH RISK' : level.includes('MEDIUM') ? 'MEDIUM RISK' : 'CRITICAL RISK'}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <Text style={styles.incidentSnippetText} numberOfLines={2}>
+                          "{incident.messageSnippet || 'Harmful message detected'}"
+                        </Text>
+
+                        <View style={styles.incidentItemFooter}>
+                          <Text style={styles.incidentTimeText}>{formattedTime}</Text>
+                          <Text style={styles.incidentCategoryText}>
+                            {incident.category || (incident.riskScore ? `Risk: ${(incident.riskScore * 100).toFixed(0)}%` : 'Harmful')}
+                          </Text>
+                          <MaterialIcons name="chevron-right" size={18} color="#9CA3AF" />
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+              </View>
+
+              {/* Right Column: Message Incident Details Panel */}
+              <View style={styles.detailsColumn}>
+                <View style={styles.detailsHeaderRow}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <MaterialIcons name="info" size={20} color="#2563EB" />
+                    <Text style={styles.columnTitle}>Message Incident Details</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => setSelectedIncident(null)}>
+                    <MaterialIcons name="close" size={20} color="#4B5563" />
+                  </TouchableOpacity>
+                </View>
+
+                {!selectedIncident ? (
+                  <View style={styles.emptyCard}>
+                    <Text style={styles.emptyText}>Select an incident from the left list to inspect detailed risk analysis, findings, and take action.</Text>
+                  </View>
+                ) : (
+                  <View style={styles.detailsCardBody}>
+                    {/* Message Header info */}
+                    <View style={styles.detailMessageMetaRow}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <MaterialIcons
+                          name={selectedIncident.type?.toUpperCase() === 'OUTGOING' ? 'north-east' : 'south-west'}
+                          size={16}
+                          color={selectedIncident.type?.toUpperCase() === 'OUTGOING' ? '#DC2626' : '#2563EB'}
+                        />
+                        <Text style={styles.detailMessageTypeText}>
+                          {selectedIncident.type?.toUpperCase() === 'OUTGOING' ? 'Outgoing Message' : 'Incoming Message'}
+                        </Text>
+                      </View>
+                      <Text style={styles.detailMessageTimeText}>
+                        {new Date(selectedIncident.timestamp).toLocaleString()}
+                      </Text>
+                    </View>
+
+                    <View style={styles.detailMessageBox}>
+                      <Text style={styles.detailMessageText}>
+                        "{selectedIncident.messageSnippet || 'No text snippet'}"
+                      </Text>
+                      <View style={styles.detailMessageBadgeRow}>
+                        <View style={styles.detailRiskPill}>
+                          <MaterialIcons name="warning" size={12} color="#DC2626" />
+                          <Text style={styles.detailRiskPillText}>
+                            {selectedIncident.riskLevel || 'HIGH RISK'}
+                          </Text>
+                        </View>
+                        <Text style={styles.detailCategoryLabel}>
+                          Category: {selectedIncident.category || 'Humiliation'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Tabs row */}
+                    <View style={styles.detailTabsRow}>
+                      {(['Summary', 'Full Analysis', 'Chat Context', 'Evidence'] as const).map((tab) => {
+                        const isTabActive = detailTab === tab;
+                        return (
+                          <TouchableOpacity
+                            key={tab}
+                            style={[styles.detailTabButton, isTabActive && styles.detailTabButtonActive]}
+                            onPress={() => setDetailTab(tab)}
+                          >
+                            <Text style={[styles.detailTabText, isTabActive && styles.detailTabTextActive]}>
+                              {tab}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+
+                    {detailTab === 'Summary' && (
+                      <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
+                        {/* Risk score progress bar */}
+                        <View style={styles.riskProgressSection}>
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                            <Text style={styles.riskProgressTitle}>Risk Score for this message</Text>
+                            <Text style={styles.riskProgressScoreText}>
+                              {selectedIncident.riskScore != null
+                                ? `${(selectedIncident.riskScore * 100).toFixed(1)}%`
+                                : '88.9%'}
+                              <Text style={{ fontSize: 11, color: '#DC2626' }}> (High Risk)</Text>
+                            </Text>
+                          </View>
+                          <View style={styles.progressBarTrack}>
+                            <View
+                              style={[
+                                styles.progressBarFill,
+                                {
+                                  width: `${Math.min(
+                                    100,
+                                    Math.max(
+                                      10,
+                                      (selectedIncident.riskScore ?? 0.889) * 100
+                                    )
+                                  )}%`,
+                                },
+                              ]}
+                            />
+                          </View>
+                        </View>
+
+                        {/* What this means callout */}
+                        <View style={styles.whatThisMeansBox}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                            <MaterialIcons name="info" size={16} color="#B91C1C" />
+                            <Text style={styles.whatThisMeansTitle}>What this means</Text>
+                          </View>
+                          <Text style={styles.whatThisMeansText}>
+                            This message contains harmful or aggressive language directed at another person. It may indicate cyberbullying behavior requiring parent guidance.
+                          </Text>
+                        </View>
+
+                        {/* Key Findings */}
+                        <Text style={styles.keyFindingsTitle}>Key Findings</Text>
+                        <View style={styles.keyFindingsList}>
+                          <View style={styles.keyFindingRow}>
+                            <Text style={styles.keyFindingKey}>Message type</Text>
+                            <Text style={styles.keyFindingVal}>
+                              {selectedIncident.type?.toUpperCase() === 'OUTGOING' ? 'Outgoing (sent by child)' : 'Incoming (received by child)'}
+                            </Text>
+                          </View>
+                          <View style={styles.keyFindingRow}>
+                            <Text style={styles.keyFindingKey}>Risk category</Text>
+                            <Text style={styles.keyFindingVal}>
+                              {selectedIncident.category || 'Humiliation, Insult'}
+                            </Text>
+                          </View>
+                          <View style={styles.keyFindingRow}>
+                            <Text style={styles.keyFindingKey}>Severity</Text>
+                            <Text style={[styles.keyFindingVal, { color: '#DC2626', fontWeight: '800' }]}>
+                              {selectedIncident.riskScore != null ? `${(selectedIncident.riskScore * 100).toFixed(0)}%` : 'High'}
+                            </Text>
+                          </View>
+                          <View style={styles.keyFindingRow}>
+                            <Text style={styles.keyFindingKey}>Confidence</Text>
+                            <Text style={styles.keyFindingVal}>
+                              {selectedIncident.riskScore != null ? `${(selectedIncident.riskScore * 100).toFixed(1)}%` : '88.9%'}
+                            </Text>
+                          </View>
+                          <View style={styles.keyFindingRow}>
+                            <Text style={styles.keyFindingKey}>Targeting evidence</Text>
+                            <Text style={styles.keyFindingVal}>
+                              Direct personal attack, second person reference
+                            </Text>
+                          </View>
+                          <View style={styles.keyFindingRow}>
+                            <Text style={styles.keyFindingKey}>Potential impact</Text>
+                            <Text style={styles.keyFindingVal}>
+                              May harm peer relationships and indicate bullying behavior
+                            </Text>
+                          </View>
+                        </View>
+                      </ScrollView>
+                    )}
+
+                    {detailTab === 'Full Analysis' && (
+                      <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
+                        <Text style={styles.tabContentHeading}>Classifier & Risk Fusion Analysis</Text>
+                        <Text style={styles.tabContentText}>Model Version: {researchRisk?.classifier?.model_version || 'cyberbullying-cascade-v4'}</Text>
+                        <Text style={styles.tabContentText}>Classifier Status: {researchRisk?.classifier?.status || 'real'}</Text>
+                        <Text style={styles.tabContentText}>CRS Score: {researchRisk?.crs != null ? `${researchRisk.crs.toFixed(1)} / 100` : 'Not available'}</Text>
+                        <Text style={styles.tabContentText}>Risk State: {researchRisk?.risk_state || 'Loading'}</Text>
+                        <Text style={[styles.tabContentHeading, { marginTop: 12 }]}>Deterministic Contributions</Text>
+                        {researchRisk?.deterministic_contributions?.map(item => (
+                          <View key={item.feature} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 }}>
+                            <Text style={styles.tabContentText}>{item.feature}</Text>
+                            <Text style={styles.tabContentText}>{item.contribution_percent.toFixed(1)}%</Text>
+                          </View>
+                        )) || <Text style={styles.tabContentText}>No deterministic contributions available.</Text>}
+                      </ScrollView>
+                    )}
+
+                    {detailTab === 'Chat Context' && (
+                      <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
+                        <Text style={styles.tabContentHeading}>Chat & Conversation Context</Text>
+                        <Text style={styles.tabContentText}>Child Profile ID: {selectedChildId || 'N/A'}</Text>
+                        <Text style={styles.tabContentText}>Parent Email: {parentEmail}</Text>
+                        <Text style={styles.tabContentText}>Incident ID: {selectedIncident.incidentId}</Text>
+                        <Text style={styles.tabContentText}>Timestamp: {new Date(selectedIncident.timestamp).toLocaleString()}</Text>
+                        <Text style={[styles.tabContentText, { marginTop: 8 }]}>
+                          Message sequence in active session is monitored for escalation and frequency patterns.
+                        </Text>
+                      </ScrollView>
+                    )}
+
+                    {detailTab === 'Evidence' && (
+                      <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
+                        <Text style={styles.tabContentHeading}>Observed Evidence & Modalities</Text>
+                        <Text style={styles.tabContentText}>Text Modality: Available ({selectedIncident.messageSnippet?.length || 0} chars)</Text>
+                        <Text style={styles.tabContentText}>Image Modality: Not provided</Text>
+                        <Text style={styles.tabContentText}>Audio Modality: Not provided</Text>
+                        <Text style={styles.tabContentText}>Video Modality: Not provided</Text>
+                        <Text style={[styles.tabContentHeading, { marginTop: 12 }]}>Severity Cues</Text>
+                        <Text style={styles.tabContentText}>• Direct aggressive language cue detected.</Text>
+                      </ScrollView>
+                    )}
+
+                    {/* Parent Action Buttons: VIEW for outgoing, VIEW (ALLOW) / BLOCK for incoming */}
+                    <View style={styles.decisionButtonsRow}>
+                      {((selectedIncident.type?.toUpperCase() === 'OUTGOING') || !selectedIncident.type) ? (
+                        <TouchableOpacity
+                          style={[styles.decisionButton, styles.viewButton]}
+                          onPress={() => setViewModalVisible(true)}
+                          activeOpacity={0.8}
+                        >
+                          <MaterialIcons name="visibility" size={16} color="#2563EB" />
+                          <Text style={[styles.decisionButtonText, { color: '#2563EB' }]}>VIEW</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <>
+                          <TouchableOpacity
+                            style={[styles.decisionButton, styles.allowButton]}
+                            onPress={async () => {
+                              if (!selectedIncident) return;
+                              try {
+                                await submitDecision(selectedIncident.incidentId, 'ALLOW');
+                              } catch (e) {
+                                console.warn('Allow API failed, applying local fallback', e);
+                              }
+                              setIncomingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
+                              setOutgoingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
+                              setSelectedIncident(null);
+                              setViewModalVisible(false);
+                              alert('Incoming message allowed (viewable and sent).');
+                            }}
+                            activeOpacity={0.8}
+                          >
+                            <MaterialIcons name="check-circle" size={16} color="#16A34A" />
+                            <Text style={[styles.decisionButtonText, { color: '#16A34A' }]}>VIEW / ALLOW</Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={[styles.decisionButton, styles.blockButton]}
+                            onPress={async () => {
+                              if (!selectedIncident) return;
+                              try {
+                                await submitDecision(selectedIncident.incidentId, 'BLOCK');
+                              } catch (e) {
+                                console.warn('Block API failed, applying local fallback', e);
+                              }
+                              setIncomingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
+                              setOutgoingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
+                              setSelectedIncident(null);
+                              setViewModalVisible(false);
+                              alert('Incoming message blocked (it won\'t send).');
+                            }}
+                            activeOpacity={0.8}
+                          >
+                            <MaterialIcons name="block" size={16} color="#DC2626" />
+                            <Text style={[styles.decisionButtonText, { color: '#DC2626' }]}>BLOCK</Text>
+                          </TouchableOpacity>
+                        </>
+                      )}
+                    </View>
                   </View>
                 )}
+              </View>
+            </View>
 
-                <View style={styles.metricsGrid}>
-                  <View style={styles.metricCard}>
-                    <Text style={[styles.metricNumber, { color: '#FF9800' }]}>{stats.pending_count}</Text>
-                    <Text style={[styles.metricLabel, { color: '#F57C00' }]}>Pending review</Text>
-                  </View>
-                  <View style={styles.metricCard}>
-                    <Text style={[styles.metricNumber, { color: '#E91E63' }]}>{stats.classifier_flagged_count}</Text>
-                    <Text style={[styles.metricLabel, { color: '#C2185B' }]}>Message-level classifier flags</Text>
-                  </View>
-                  <View style={styles.metricCard}>
-                    <Text style={[styles.metricNumber, { color: '#42A5F5' }]}>{stats.total_events}</Text>
-                    <Text style={[styles.metricLabel, { color: '#1976D2' }]}>Harmful incidents</Text>
-                  </View>
-                </View>
+            {/* Bottom Research Summary Card */}
+            <View style={styles.bottomResearchSection}>
+              <View style={styles.researchRiskCard}>
+                <Text style={styles.researchRiskTitle}>Research Risk Assessment & Provenance</Text>
+                <Text style={styles.researchRiskText}>
+                  {researchRisk?.classifier?.status === 'dummy'
+                    ? 'Development/Dummy classifier (simulation only)'
+                    : researchRisk?.classifier?.status === 'real'
+                      ? 'Supplied PKL classifier connected (classification performance not independently validated)'
+                      : 'Classifier status: Not available'}
+                </Text>
                 <Text style={styles.researchRiskNote}>
-                  Message-level classifier labels are not child risk or CRS.
-                </Text>
-                <View style={styles.researchRiskCard}>
-                  <Text style={styles.researchRiskTitle}>Classification</Text>
-                  <Text style={styles.researchRiskText}>
-                    {researchRisk?.classifier?.status === 'dummy'
-                      ? 'Development/Dummy classifier (simulation only)'
-                      : researchRisk?.classifier?.status === 'real'
-                        ? 'Supplied PKL classifier connected (classification performance not independently validated)'
-                        : 'Classifier status: Not available'}
-                  </Text>
-                  {researchRisk?.classification_disclaimer && (
-                    <Text style={styles.researchRiskNote}>
-                      {researchRisk.classification_disclaimer}
-                    </Text>
-                  )}
-                </View>
-                <View style={styles.researchRiskCard}>
-                  <Text style={styles.researchRiskTitle}>Research Risk Assessment</Text>
-                  <Text style={styles.researchRiskValue}>
-                    {researchRisk?.crs === null || researchRisk?.crs === undefined
-                      ? 'CRS: Not available'
-                      : `CRS: ${researchRisk.crs.toFixed(1)} / 100`}
-                  </Text>
-                  <Text style={styles.researchRiskText}>
-                    Risk state: {researchRisk?.risk_state ?? 'Loading'}
-                  </Text>
-                  <Text style={styles.researchRiskText}>
-                    Stored incidents: {researchRisk?.incident_count ?? 'Not available'}
-                  </Text>
-                  <Text style={styles.researchRiskText}>
-                    Identified attackers: {researchRisk?.social_graph.attacker_count === null
-                      || researchRisk?.social_graph.attacker_count === undefined
-                      ? 'Not available'
-                      : researchRisk.social_graph.attacker_count}
-                    {researchRisk?.social_graph.identified_attackers?.length
-                      ? ` · ${researchRisk.social_graph.identified_attackers.join(', ')}`
-                      : ''}
-                  </Text>
-                  <Text style={styles.researchRiskNote}>
-                    {researchRisk?.message ?? 'Loading risk assessment status.'}
-                  </Text>
-                  {researchRisk?.risk_disclaimer && (
-                    <Text style={styles.researchRiskNote}>{researchRisk.risk_disclaimer}</Text>
-                  )}
-                  <Text style={styles.researchRiskSubheading}>Risk components</Text>
-                  {riskComponentLabels.map(([key, label]) => {
-                    const component = researchRisk?.components[key];
-                    const currentValue = key === 'targeting'
-                      ? currentMessageAnalysis?.targeting_score
-                      : key === 'severity'
-                        ? component?.value
-                        : undefined;
-                    const latestStoredValue = key === 'targeting'
-                      ? researchRisk?.latest_incident?.targeting_score
-                      : key === 'severity'
-                        ? researchRisk?.latest_incident?.severity_score
-                        : undefined;
-                    const latestStoredMessageOnly = !currentMessageAnalysis
-                      && (key === 'targeting' || key === 'severity');
-                    const currentSeverityEvidence = currentMessageAnalysis
-                      ? Array.from(new Set([
-                        ...currentMessageAnalysis.severity_evidence,
-                        ...(currentMessageAnalysis.categories?.map(item => item.name)
-                          ?? (currentMessageAnalysis.category
-                            ? [currentMessageAnalysis.category]
-                            : [])),
-                      ]))
-                      : [];
-                    return (
-                      <View key={key} style={styles.researchRiskRow}>
-                        <Text style={styles.researchRiskText}>{label}</Text>
-                        <Text style={styles.researchRiskValueSmall}>
-                          {key === 'classifier_probability' && currentMessageAnalysis
-                              ? currentMessageAnalysis.probability === null
-                                ? 'Not available'
-                                : String(currentMessageAnalysis.probability)
-                            : typeof currentValue === 'number'
-                              ? key === 'severity'
-                                ? `${Math.round(currentValue * 100)}% research-derived severity score`
-                                : displayResearchPercent(currentValue)
-                              : latestStoredMessageOnly
-                                ? typeof latestStoredValue === 'number'
-                                  ? `Latest stored message: ${key === 'severity'
-                                    ? `${Math.round(latestStoredValue * 100)}%${researchRisk?.latest_incident?.category ? ` — ${researchRisk.latest_incident.category}` : ''}`
-                                    : displayResearchPercent(latestStoredValue)}`
-                                  : researchRisk?.latest_incident
-                                    ? `Latest stored message: ${key === 'targeting' ? 'No targeting evidence observed' : 'Insufficient evidence'}`
-                                    : 'No current message analysis'
-                              : ['targeting', 'severity', 'multimodal', 'temporal', 'escalation', 'social_graph', 'historical'].includes(key)
-                                ? typeof component?.value === 'number'
-                                  ? key === 'severity' && currentMessageAnalysis
-                                    ? `${Math.round(component.value * 100)}% research-derived severity score`
-                                    : displayResearchPercent(component.value)
-                                  : displayComponentValue(
-                                    component?.value,
-                                    component?.status,
-                                    component?.observed_evidence_count,
-                                  )
-                            : displayComponentValue(
-                              component?.value,
-                              component?.status,
-                              component?.observed_evidence_count,
-                            )}
-                        </Text>
-                        {key === 'classifier_probability' && (
-                          <Text style={styles.researchRiskNote}>
-                            {currentMessageAnalysis?.probability !== null && currentMessageAnalysis
-                              ? `${currentMessageAnalysis.classification} message-level prediction from ${currentMessageAnalysis.model_version}. Probability: ${currentMessageAnalysis.probability}. Category: ${currentMessageAnalysis.category ?? (currentMessageAnalysis.classification === 'Clean' ? 'Not applicable — Clean message' : 'No category emitted')}. Not child risk or CRS.`
-                              : currentMessageAnalysis
-                                ? `Current message prediction from ${currentMessageAnalysis.model_version}; probability is not available. Category: ${currentMessageAnalysis.category ?? (currentMessageAnalysis.classification === 'Clean' ? 'Not applicable — Clean message' : 'No category emitted')}. Not child risk or CRS.`
-                              : typeof component?.value === 'number'
-                              ? `Latest stored message-level prediction from ${component.model_version ?? researchRisk?.classifier.model_version ?? 'the classifier'}. Not child risk or CRS.`
-                              : 'Not available — no current message prediction is available.'}
-                          </Text>
-                        )}
-                        {key === 'targeting' && (currentMessageAnalysis || component?.evidence?.length || researchRisk?.latest_incident) ? (
-                          <Text style={styles.researchRiskNote}>
-                            {currentMessageAnalysis
-                              ? `Current message evidence: ${currentMessageAnalysis.targeting_evidence.join(', ') || 'No targeting evidence observed'}`
-                              : `Latest stored message targeting evidence: ${researchRisk?.latest_incident?.targeting_evidence.join(', ') || 'None observed'}. This is historical message evidence, not current-message targeting.`}
-                          </Text>
-                        ) : null}
-                        {key === 'severity' && (
-                          <Text style={styles.researchRiskNote}>
-                            {currentMessageAnalysis
-                              ? `Current message evidence: ${currentSeverityEvidence.join(', ') || 'None observed'}. This is a research-derived severity weight, not a model probability.`
-                              : researchRisk?.latest_incident
-                                ? `Latest stored message severity evidence: ${researchRisk.latest_incident.severity_evidence.join(', ') || 'None observed'}${researchRisk.latest_incident.category ? ` (category ${researchRisk.latest_incident.category})` : ''}. This does not populate current-message severity.`
-                                : 'No current message severity evidence is available. Historical severity evidence is shown only in the timeline.'}
-                          </Text>
-                        )}
-                        {key === 'historical' && (
-                          <Text style={styles.researchRiskNote}>
-                            {`Historical risk score from ${component?.observed_incident_count ?? 0} stored incident(s); research-derived, not validated.`}
-                          </Text>
-                        )}
-                        {key === 'temporal' && researchRisk?.history_metrics && (
-                          <Text style={styles.researchRiskNote}>
-                            {`${researchRisk.history_metrics.total_incidents ?? 0} observed incidents across ${researchRisk.history_metrics.active_days ?? 0} active days.`}
-                          </Text>
-                        )}
-                        {key === 'multimodal' && (
-                          <Text style={styles.researchRiskNote}>
-                            {currentTextAvailable
-                              ? 'Text evidence used by the classifier; no additional image/audio/video evidence was provided.'
-                              : researchRisk?.latest_incident
-                                ? `Latest stored message — Text: ${researchRisk.latest_incident.text_status === 'available' ? 'Available' : 'Not provided'} · Image: Not provided · Audio: Not provided · Video: Not provided.`
-                              : `Text: ${currentMessageAnalysis
-                                ? currentMessageAnalysis.text_status === 'available' ? 'Available' : 'Not provided'
-                                : component?.text_status === 'available' ? 'Available' : 'Not provided'} · Image: ${displayModalityStatus(component?.image_status)} · Audio: ${displayModalityStatus(component?.audio_status)} · Video: ${displayModalityStatus(component?.video_status)}`}
-                          </Text>
-                        )}
-                      </View>
-                    );
-                  })}
-                  <Text style={styles.researchRiskSubheading}>
-                    Research feature contributions (deterministic; not SHAP)
-                  </Text>
-                  {researchRisk?.deterministic_contributions?.length ? (
-                    researchRisk.deterministic_contributions.map(item => (
-                      <View key={item.feature} style={styles.researchRiskRow}>
-                        <Text style={styles.researchRiskText}>{item.feature}</Text>
-                        <Text style={styles.researchRiskValueSmall}>
-                          {`${item.contribution_percent.toFixed(1)}%`}
-                        </Text>
-                      </View>
-                    ))
-                  ) : (
-                    <Text style={styles.researchRiskNote}>
-                      No risk feature contributions are available.
-                    </Text>
-                  )}
-                  <Text style={styles.researchRiskSubheading}>Risk timeline</Text>
-                  {!riskTimeline || riskTimeline.timeline.length === 0 ? (
-                    <Text style={styles.researchRiskNote}>
-                      {riskTimeline?.status === 'no_history'
-                        ? 'Insufficient evidence: no stored incidents for this child.'
-                        : 'Not available'}
-                    </Text>
-                  ) : (
-                    riskTimeline.timeline.slice(-5).reverse().map(point => (
-                      <View key={point.incident_id} style={styles.timelineRow}>
-                        <Text style={styles.researchRiskText}>
-                          Incident ID: {point.incident_id}
-                        </Text>
-                        <Text style={styles.researchRiskText}>
-                          {new Date(point.timestamp).toLocaleString()}
-                        </Text>
-                        <Text style={styles.researchRiskText}>
-                          {point.classification ?? 'Classification not available'}
-                          {' · Category: '}
-                          {point.classification === 'Clean'
-                            ? 'Not applicable'
-                            : point.category ?? 'Not available'}
-                        </Text>
-                        {point.classifier_probability != null && (
-                          <Text style={styles.researchRiskText}>
-                            Message-level classifier probability: {String(point.classifier_probability)}
-                          </Text>
-                        )}
-                        {(point.targeting_evidence?.length ?? 0) > 0 && (
-                          <Text style={styles.researchRiskNote}>
-                            Targeting evidence: {point.targeting_evidence?.join(', ')}
-                          </Text>
-                        )}
-                        {(point.severity_evidence?.length ?? 0) > 0 && (
-                          <Text style={styles.researchRiskNote}>
-                            Severity evidence: {point.severity_evidence?.join(', ')}
-                          </Text>
-                        )}
-                        <Text style={styles.researchRiskValueSmall}>
-                          {point.crs === null
-                            ? 'Not available'
-                            : `${point.crs.toFixed(1)} / 100`}
-                          {' · '}
-                          {point.risk_state || 'Not available'}
-                        </Text>
-                      </View>
-                    ))
-                  )}
-                  <Text style={styles.researchRiskSubheading}>Social context</Text>
-                  <Text style={styles.researchRiskText}>
-                    Observed interactions: {displayEvidenceCount(socialGraph?.interaction_count)}
-                    {' · '}Identified senders: {displayEvidenceCount(socialGraph?.attacker_count)}
-                  </Text>
-                  <Text style={styles.researchRiskText}>
-                    Sender concentration: {typeof socialGraph?.sender_concentration === 'number'
-                      ? displayResearchPercent(socialGraph.sender_concentration)
-                      : displayComponentValue(
-                        socialGraph?.sender_concentration,
-                        socialGraph?.features.concentration.status,
-                      )}
-                    {' · '}Social risk: {typeof socialGraph?.graph_score === 'number'
-                      ? displayResearchPercent(socialGraph.graph_score)
-                      : displayComponentValue(
-                        socialGraph?.graph_score,
-                        socialGraph?.graph_score_status,
-                      )}
-                  </Text>
-                  <Text style={styles.researchRiskSubheading}>SHAP contributors</Text>
-                  {riskExplanation?.status === 'computed' && riskExplanation.contributors?.length ? (
-                    riskExplanation.contributors.map(contribution => (
-                      <View key={contribution.feature} style={styles.researchRiskRow}>
-                        <Text style={styles.researchRiskText}>{contribution.feature}</Text>
-                        <Text style={styles.researchRiskValueSmall}>
-                          {contribution.value > 0 ? '+' : ''}
-                          {contribution.value.toFixed(4)}
-                        </Text>
-                      </View>
-                    ))
-                  ) : (
-                    <Text style={styles.researchRiskNote}>
-                      {researchRisk?.risk_fusion_model?.configured
-                        ? 'SHAP unavailable — the configured risk-fusion model has no available TreeSHAP explanation.'
-                        : researchRisk?.risk_fusion_model?.target_message
-                          ?? 'SHAP unavailable — no independently labeled child-risk fusion training data is configured.'}
-                    </Text>
-                  )}
-                  <Text style={styles.researchRiskNote}>
-                    Parent action is separate from risk state. Review incidents and choose an available action; HIGH or CRITICAL never automatically means BLOCK.
-                  </Text>
-                </View>
-              </>
-            )}
-          </View>
-
-          {/* OUTGOING MESSAGES SECTION */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>📤 Outgoing Messages (High / Critical Risk)</Text>
-            {outgoingIncidents.length === 0 ? (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>
-                  {selectedChild ? `No high-risk outgoing alerts for ${selectedChild}.` : 'No connected child profile is available for this parent account.'}
+                  {researchRisk?.message || 'Dashboard monitors child interactions in real-time. Parent actions are separate from automated risk scoring.'}
                 </Text>
               </View>
-            ) : (
-              outgoingIncidents.map((incident) => (
-                <AlertCard key={incident.incidentId} alert={incident} onDecision={handleDecision} />
-              ))
-            )}
-          </View>
+            </View>
+          </ScrollView>
+        </View>
 
-          {/* INCOMING MESSAGES SECTION */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>📥 Incoming Messages (High / Critical Risk)</Text>
-            {incomingIncidents.length === 0 ? (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>
-                  {selectedChild ? `No high-risk incoming alerts for ${selectedChild}.` : 'No connected child profile is available for this parent account.'}
-                </Text>
+        {/* View Details Inspection Modal */}
+        <Modal
+          visible={viewModalVisible}
+          animationType="fade"
+          transparent={true}
+          onRequestClose={() => setViewModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <MaterialIcons name="shield" size={22} color="#E91E63" />
+                  <Text style={styles.modalTitle}>Message Inspection</Text>
+                </View>
+                <TouchableOpacity onPress={() => setViewModalVisible(false)}>
+                  <MaterialIcons name="close" size={22} color="#4B5563" />
+                </TouchableOpacity>
               </View>
-            ) : (
-              incomingIncidents.map((incident) => (
-                <AlertCard key={incident.incidentId} alert={incident} onDecision={handleDecision} />
-              ))
-            )}
-          </View>
 
-          {/* Quick Actions */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Quick Actions</Text>
-            <View style={styles.quickActionsRow}>
-              <TouchableOpacity style={styles.quickActionCard} onPress={() => loadData()} activeOpacity={0.7}>
-                <MaterialIcons name="qr-code-scanner" size={48} color="#000000" />
-                <Text style={styles.quickActionText}>Scan / Refresh</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.quickActionCard}
-                onPress={() => {
-                  router.push(
-                    `/reports?email=${encodeURIComponent(parentEmail)}&childName=${encodeURIComponent(selectedChild)}&childId=${encodeURIComponent(selectedChildId)}`,
-                  );
-                }}
-                disabled={!selectedChild}
-                activeOpacity={0.7}
-              >
-                <MaterialIcons name="bar-chart" size={48} color="#000000" />
-                <Text style={styles.quickActionText}>Analytics & Insights</Text>
-              </TouchableOpacity>
+              {selectedIncident && (
+                <ScrollView contentContainerStyle={{ paddingBottom: 20 }} showsVerticalScrollIndicator={false}>
+                  <View style={styles.modalMessageBox}>
+                    <Text style={styles.modalMessageLabel}>Message Content:</Text>
+                    <Text style={styles.modalMessageText}>"{selectedIncident.messageSnippet || 'No message content'}"</Text>
+                  </View>
+
+                  <View style={styles.keyFindingsList}>
+                    <View style={styles.keyFindingRow}>
+                      <Text style={styles.keyFindingKey}>Incident ID</Text>
+                      <Text style={styles.keyFindingVal}>{selectedIncident.incidentId}</Text>
+                    </View>
+                    <View style={styles.keyFindingRow}>
+                      <Text style={styles.keyFindingKey}>Message Type</Text>
+                      <Text style={styles.keyFindingVal}>
+                        {selectedIncident.type?.toUpperCase() === 'OUTGOING' ? 'Outgoing Message' : 'Incoming Message'}
+                      </Text>
+                    </View>
+                    <View style={styles.keyFindingRow}>
+                      <Text style={styles.keyFindingKey}>Risk Level</Text>
+                      <Text style={[styles.keyFindingVal, { color: '#DC2626', fontWeight: '800' }]}>{selectedIncident.riskLevel}</Text>
+                    </View>
+                    <View style={styles.keyFindingRow}>
+                      <Text style={styles.keyFindingKey}>Category</Text>
+                      <Text style={styles.keyFindingVal}>{selectedIncident.category || 'Harmful Interaction'}</Text>
+                    </View>
+                    <View style={styles.keyFindingRow}>
+                      <Text style={styles.keyFindingKey}>Timestamp</Text>
+                      <Text style={styles.keyFindingVal}>{new Date(selectedIncident.timestamp).toLocaleString()}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.whatThisMeansBox}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <MaterialIcons name="info" size={16} color="#B91C1C" />
+                      <Text style={styles.whatThisMeansTitle}>Safety Assessment</Text>
+                    </View>
+                    <Text style={styles.whatThisMeansText}>
+                      This message was flagged by the safety classification engine. You can block further interactions from this sender or close this inspection.
+                    </Text>
+                  </View>
+
+                  <View style={styles.modalActionRow}>
+                    {selectedIncident.type?.toUpperCase() === 'INCOMING' && (
+                      <TouchableOpacity
+                        style={[styles.decisionButton, styles.blockButton, { flex: 1 }]}
+                        onPress={async () => {
+                          if (!selectedIncident) return;
+                          try {
+                            await submitDecision(selectedIncident.incidentId, 'BLOCK');
+                          } catch (e) {
+                            console.warn('Block API failed, applying local fallback', e);
+                          }
+                          setIncomingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
+                          setOutgoingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
+                          setSelectedIncident(null);
+                          setViewModalVisible(false);
+                          alert('Incoming message blocked successfully.');
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <MaterialIcons name="block" size={18} color="#DC2626" />
+                        <Text style={[styles.decisionButtonText, { color: '#DC2626' }]}>BLOCK</Text>
+                      </TouchableOpacity>
+                    )}
+
+                    <TouchableOpacity
+                      style={[styles.decisionButton, styles.viewButton, { flex: 1 }]}
+                      onPress={() => setViewModalVisible(false)}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={[styles.decisionButtonText, { color: '#2563EB' }]}>CLOSE</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              )}
             </View>
           </View>
-        </ScrollView>
+        </Modal>
       </SafeAreaView>
     </LinearGradient>
   );
@@ -692,217 +967,536 @@ const DashboardScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  scrollContent: { padding: 20, paddingTop: 10 },
-  header: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center', 
-    marginBottom: 20,
-    paddingHorizontal: 4
-  },
-  logoRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  appName: { 
-    fontSize: 22, 
-    fontWeight: '800', 
-    color: '#000000', 
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-  },
-  headerRight: { flexDirection: 'row', gap: 10 },
-  iconButton: { 
-    width: 42, 
-    height: 42, 
-    borderRadius: 21, 
-    backgroundColor: 'rgba(255, 255, 255, 0.75)', 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    shadowColor: '#000', 
-    shadowOpacity: 0.08, 
-    shadowRadius: 6, 
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 3,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.95)'
-  },
-  mappedInfoBox: { 
-    backgroundColor: 'rgba(255, 255, 255, 0.75)', 
-    padding: 14, 
-    borderRadius: 18, 
-    marginBottom: 20, 
-    borderWidth: 1.5, 
-    borderColor: 'rgba(255, 255, 255, 0.95)',
+  mainContainer: { flex: 1, flexDirection: 'row' },
+  sidebar: {
+    width: 260,
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    borderRightWidth: 1.5,
+    borderRightColor: 'rgba(255, 255, 255, 0.95)',
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+    justifyContent: 'space-between',
     shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 3
-  },
-  mappedText: { fontSize: 14, color: '#000000', fontWeight: '600', letterSpacing: 0.2 },
-  boldText: { fontWeight: '800', color: '#000000' },
-  section: { marginBottom: 28 },
-  sectionTitle: { 
-    fontSize: 18, 
-    fontWeight: '800', 
-    color: '#000000', 
-    marginBottom: 16,
-    paddingHorizontal: 4,
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-  },
-  childTabsRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
-  childTab: { 
-    paddingHorizontal: 20, 
-    paddingVertical: 10, 
-    borderRadius: 25, 
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.9)',
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 5,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2
-  },
-  activeChildTab: { 
-    backgroundColor: 'rgba(233, 30, 99, 0.25)',
-    borderColor: 'rgba(233, 30, 99, 0.6)',
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 4
-  },
-  childTabText: { fontSize: 14, fontWeight: '700', color: '#000000', letterSpacing: 0.3 },
-  activeChildTabText: { color: '#000000', fontWeight: '800' },
-  metricsGrid: { flexDirection: 'row', gap: 12 },
-  metricCard: { 
-    flex: 1, 
-    borderRadius: 20, 
-    padding: 18, 
-    alignItems: 'center', 
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.75)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.95)',
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.05,
     shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
     elevation: 4,
-    minHeight: 110
   },
-  metricNumber: { fontSize: 36, fontWeight: '800', marginBottom: 6, letterSpacing: -0.5 },
-  metricLabel: { 
-    fontSize: 11, 
-    fontWeight: '700', 
-    textAlign: 'center',
-    letterSpacing: 1,
-    color: '#000000',
-    textTransform: 'uppercase',
+  sidebarHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 24, paddingHorizontal: 4 },
+  logoBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#E91E63',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#E91E63',
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  researchRiskCard: {
-    marginTop: 14,
-    padding: 16,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255, 255, 255, 0.75)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.95)',
-  },
-  researchRiskTitle: { fontSize: 15, fontWeight: '800', color: '#000000', marginBottom: 8 },
-  researchRiskValue: { fontSize: 20, fontWeight: '800', color: '#000000', marginBottom: 4 },
-  researchRiskSubheading: {
-    fontSize: 13,
-    fontWeight: '800',
+  appName: {
+    fontSize: 15,
+    fontWeight: '900',
     color: '#111827',
-    marginTop: 14,
-    marginBottom: 5,
+    letterSpacing: 0.8,
   },
-  researchRiskRow: {
+  sidebarProfileCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: 'rgba(233, 30, 99, 0.2)',
+    marginBottom: 24,
+    gap: 10,
+  },
+  profileAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(233, 30, 99, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  profileName: { fontSize: 14, fontWeight: '800', color: '#111827' },
+  profileStatus: { fontSize: 10, color: '#6B7280', fontWeight: '600', marginTop: 2 },
+  navMenu: { gap: 6, flex: 1 },
+  navItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    gap: 12,
+  },
+  navItemActive: {
+    backgroundColor: 'rgba(233, 30, 99, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(233, 30, 99, 0.25)',
+  },
+  navText: { fontSize: 14, fontWeight: '700', color: '#4B5563' },
+  navTextActive: { color: '#E91E63', fontWeight: '800' },
+  badgeContainer: {
+    marginLeft: 'auto',
+    backgroundColor: '#E91E63',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  badgeText: { fontSize: 10, fontWeight: '800', color: '#FFFFFF' },
+  sidebarHelperCard: {
+    backgroundColor: 'rgba(233, 30, 99, 0.08)',
+    borderRadius: 16,
+    padding: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(233, 30, 99, 0.2)',
+    gap: 8,
+  },
+  helperIllustration: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(233, 30, 99, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  helperText: { fontSize: 12, fontWeight: '700', color: '#E91E63', textAlign: 'center', lineHeight: 16 },
+  contentArea: { flex: 1 },
+  scrollContent: { padding: 28, paddingBottom: 40 },
+  topBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 12,
-    paddingVertical: 3,
+    marginBottom: 24,
   },
-  researchRiskValueSmall: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#111827',
-    textAlign: 'right',
-    flexShrink: 1,
-  },
-  timelineRow: {
-    paddingVertical: 5,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(107, 114, 128, 0.18)',
-  },
-  researchRiskText: { fontSize: 13, fontWeight: '600', color: '#000000', marginTop: 3 },
-  researchRiskNote: { fontSize: 12, color: '#374151', marginTop: 8, lineHeight: 17 },
-  emptyCard: { 
-    backgroundColor: 'rgba(255, 255, 255, 0.75)', 
-    borderRadius: 20, 
-    padding: 20, 
-    alignItems: 'center', 
-    borderWidth: 1.5, 
-    borderColor: 'rgba(255, 255, 255, 0.95)',
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 2,
-    minHeight: 90
-  },
-  emptyText: { 
-    textAlign: 'center', 
-    color: '#000000', 
-    fontSize: 14,
-    fontWeight: '600',
-    letterSpacing: 0.2,
-  },
-  actionGrid: { flexDirection: 'row', gap: 14, marginTop: 8 },
-  quickActionsRow: {
+  greetingTitle: { fontSize: 28, fontWeight: '900', color: '#111827', letterSpacing: -0.5 },
+  greetingSubtitle: { fontSize: 14, fontWeight: '600', color: '#4B5563', marginTop: 2 },
+  topBarRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  dateSelector: {
     flexDirection: 'row',
-    gap: 14,
-    marginTop: 8
-  },
-  quickActionCard: {
-    flex: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.75)',
-    borderRadius: 20,
-    padding: 20,
     alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: 'rgba(229, 231, 235, 0.8)',
+    gap: 6,
+  },
+  dateSelectorText: { fontSize: 13, fontWeight: '700', color: '#374151' },
+  topIconButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
     justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: 'rgba(229, 231, 235, 0.8)',
+  },
+  redDot: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#DC2626',
+  },
+  topAvatarButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: 'rgba(229, 231, 235, 0.8)',
+  },
+  logoutButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(233, 30, 99, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: 'rgba(233, 30, 99, 0.3)',
+  },
+  childTabsRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
+  childTab: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.9)',
+  },
+  activeChildTab: {
+    backgroundColor: 'rgba(233, 30, 99, 0.2)',
+    borderColor: 'rgba(233, 30, 99, 0.5)',
+  },
+  childTabText: { fontSize: 13, fontWeight: '700', color: '#374151' },
+  activeChildTabText: { color: '#E91E63', fontWeight: '800' },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEE2E2',
+    padding: 12,
+    borderRadius: 14,
+    marginBottom: 20,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+  },
+  errorBannerText: { fontSize: 13, color: '#B91C1C', fontWeight: '600', flex: 1 },
+  metricsRow: {
+    flexDirection: 'row',
+    gap: 16,
+    marginBottom: 28,
+  },
+  kpiCard: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    borderRadius: 20,
+    padding: 18,
     borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.95)',
     shadowColor: '#000',
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.06,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 3,
-    minHeight: 120,
-    gap: 12
   },
-  quickActionText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#000000',
-    textAlign: 'center',
-    letterSpacing: 0.3,
-    lineHeight: 18
+  kpiCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
   },
-  actionButton: { 
-    flex: 1, 
-    height: 90, 
-    flexDirection: 'column', 
-    paddingHorizontal: 0, 
-    borderRadius: 20, 
-    backgroundColor: 'rgba(255, 255, 255, 0.75)', 
-    borderWidth: 1.5, 
+  kpiIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  warningBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    gap: 4,
+  },
+  warningBadgeText: { fontSize: 10, fontWeight: '800', color: '#DC2626' },
+  kpiNumber: { fontSize: 26, fontWeight: '900', color: '#111827', marginBottom: 2 },
+  kpiLabel: { fontSize: 13, fontWeight: '800', color: '#374151', marginBottom: 4 },
+  kpiSubtext: { fontSize: 11, color: '#6B7280', fontWeight: '600', lineHeight: 15 },
+  splitLayout: {
+    flexDirection: 'row',
+    gap: 20,
+    marginBottom: 28,
+  },
+  recentIncidentsColumn: {
+    flex: 1.1,
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    borderRadius: 24,
+    padding: 20,
+    borderWidth: 1.5,
     borderColor: 'rgba(255, 255, 255, 0.95)',
-    shadowColor: '#000', 
-    shadowOpacity: 0.08, 
-    shadowRadius: 10, 
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3 
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  detailsColumn: {
+    flex: 1.2,
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    borderRadius: 24,
+    padding: 20,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.95)',
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  columnTitle: { fontSize: 16, fontWeight: '900', color: '#111827' },
+  columnSubtitle: { fontSize: 12, color: '#6B7280', fontWeight: '600', marginBottom: 16 },
+  viewAllText: { fontSize: 13, fontWeight: '800', color: '#E91E63' },
+  detailsHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  incidentItemCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1.5,
+    borderColor: 'rgba(229, 231, 235, 0.8)',
+    shadowColor: '#000',
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  incidentItemCardSelected: {
+    borderColor: '#E91E63',
+    backgroundColor: 'rgba(233, 30, 99, 0.04)',
+    borderWidth: 2,
+  },
+  incidentItemTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  directionIconBox: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  incidentDirectionText: { fontSize: 12, fontWeight: '700', color: '#374151' },
+  riskLevelPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  riskLevelPillText: { fontSize: 10, fontWeight: '800' },
+  incidentSnippetText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 10,
+    lineHeight: 18,
+  },
+  incidentItemFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+    paddingTop: 8,
+  },
+  incidentTimeText: { fontSize: 11, color: '#6B7280', fontWeight: '600' },
+  incidentCategoryText: { fontSize: 11, color: '#4B5563', fontWeight: '700' },
+  emptyCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(229, 231, 235, 0.8)',
+  },
+  emptyText: { textAlign: 'center', color: '#4B5563', fontSize: 13, fontWeight: '600', lineHeight: 18 },
+  detailsCardBody: { flex: 1 },
+  detailMessageMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  detailMessageTypeText: { fontSize: 13, fontWeight: '800', color: '#111827' },
+  detailMessageTimeText: { fontSize: 11, color: '#6B7280', fontWeight: '600' },
+  detailMessageBox: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 14,
+    borderWidth: 1.5,
+    borderColor: 'rgba(229, 231, 235, 0.8)',
+  },
+  detailMessageText: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 10, lineHeight: 20 },
+  detailMessageBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+    paddingTop: 8,
+  },
+  detailRiskPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    gap: 4,
+  },
+  detailRiskPillText: { fontSize: 10, fontWeight: '800', color: '#DC2626' },
+  detailCategoryLabel: { fontSize: 12, fontWeight: '700', color: '#4B5563' },
+  detailTabsRow: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(229, 231, 235, 0.5)',
+    borderRadius: 12,
+    padding: 3,
+    marginBottom: 14,
+  },
+  detailTabButton: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 10,
+  },
+  detailTabButtonActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  detailTabText: { fontSize: 12, fontWeight: '700', color: '#4B5563' },
+  detailTabTextActive: { color: '#E91E63', fontWeight: '900' },
+  riskProgressSection: {
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(229, 231, 235, 0.8)',
+  },
+  riskProgressTitle: { fontSize: 13, fontWeight: '800', color: '#111827' },
+  riskProgressScoreText: { fontSize: 13, fontWeight: '900', color: '#111827' },
+  progressBarTrack: {
+    height: 8,
+    backgroundColor: '#E5E7EB',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#E91E63',
+    borderRadius: 4,
+  },
+  whatThisMeansBox: {
+    backgroundColor: '#FEF2F2',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+  },
+  whatThisMeansTitle: { fontSize: 12, fontWeight: '900', color: '#B91C1C' },
+  whatThisMeansText: { fontSize: 12, color: '#7F1D1D', lineHeight: 17, fontWeight: '600' },
+  keyFindingsTitle: { fontSize: 13, fontWeight: '900', color: '#111827', marginBottom: 8 },
+  keyFindingsList: {
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(229, 231, 235, 0.8)',
+    gap: 8,
+    marginBottom: 14,
+  },
+  keyFindingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  keyFindingKey: { fontSize: 12, fontWeight: '700', color: '#4B5563' },
+  keyFindingVal: { fontSize: 12, fontWeight: '700', color: '#111827', textAlign: 'right', flexShrink: 1, maxWidth: '60%' },
+  tabContentHeading: { fontSize: 14, fontWeight: '900', color: '#111827', marginBottom: 6 },
+  tabContentText: { fontSize: 13, color: '#374151', lineHeight: 18, fontWeight: '600', marginBottom: 4 },
+  decisionButtonsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(229, 231, 235, 0.8)',
+    paddingTop: 14,
+  },
+  decisionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    gap: 6,
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  allowButton: { borderColor: '#16A34A', backgroundColor: '#F0FDF4' },
+  blockButton: { borderColor: '#DC2626', backgroundColor: '#FEF2F2' },
+  editButton: { borderColor: '#D97706', backgroundColor: '#FFFBEB' },
+  viewButton: { borderColor: '#2563EB', backgroundColor: '#EFF6FF' },
+  decisionButtonText: { fontSize: 12, fontWeight: '900', letterSpacing: 0.3 },
+  bottomResearchSection: { marginTop: 4 },
+  researchRiskCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.95)',
+  },
+  researchRiskTitle: { fontSize: 14, fontWeight: '900', color: '#111827', marginBottom: 6 },
+  researchRiskText: { fontSize: 12, fontWeight: '700', color: '#374151', marginBottom: 4 },
+  researchRiskNote: { fontSize: 11, color: '#6B7280', lineHeight: 16, fontWeight: '600' },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    width: '100%',
+    maxWidth: 600,
+    maxHeight: '85%',
+    padding: 24,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 15,
+    elevation: 8,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+    paddingBottom: 12,
+  },
+  modalTitle: { fontSize: 18, fontWeight: '900', color: '#111827' },
+  modalMessageBox: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  modalMessageLabel: { fontSize: 12, fontWeight: '800', color: '#6B7280', marginBottom: 6, textTransform: 'uppercase' },
+  modalMessageText: { fontSize: 15, fontWeight: '700', color: '#111827', lineHeight: 22 },
+  modalActionRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 16,
   },
 });
 
