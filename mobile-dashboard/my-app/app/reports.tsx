@@ -65,6 +65,16 @@ export default function ReportsScreen() {
   const [currentMessageAnalysis, setCurrentMessageAnalysis] = useState<CurrentMessageAnalysis | null>(null);
   const [incidentsList, setIncidentsList] = useState<IncidentType[]>([]);
 
+  const [screenWidth, setScreenWidth] = useState<number>(SCREEN_WIDTH);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => setScreenWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const isLarge = screenWidth >= 768;
+
   const childId = ((routeParams.childId as string) || '').trim();
   const childIdUnavailable = !childId;
   const parentEmail = hasParentSession()
@@ -402,9 +412,9 @@ export default function ReportsScreen() {
     >
       <SafeAreaView style={{ flex: 1 }}>
         <StatusBar style="dark" />
-        <View style={styles.mainContainer}>
-          {/* Persistent Left Sidebar */}
-          <View style={styles.sidebar}>
+        <View style={[styles.mainContainer, { flexDirection: isLarge ? 'row' : 'column' }]}>
+          {/* Persistent Left Sidebar or Mobile Top Tab Header */}
+          <View style={[styles.sidebar, { width: isLarge ? 260 : '100%', borderRightWidth: isLarge ? 1.5 : 0, borderBottomWidth: isLarge ? 0 : 1.5, paddingVertical: isLarge ? 24 : 12, paddingHorizontal: isLarge ? 16 : 12 }]}>
             <View>
               <View style={styles.sidebarHeader}>
                 <View style={styles.logoBadge}>
@@ -416,47 +426,74 @@ export default function ReportsScreen() {
                 </View>
               </View>
 
-              <View style={styles.navMenu}>
-                {sidebarTabs.map((tab) => {
-                  const isActive = activeTab === tab.name;
-                  return (
-                    <TouchableOpacity
-                      key={tab.name}
-                      style={[styles.navItem, isActive && styles.navItemActive]}
-                      onPress={() => setActiveTab(tab.name)}
-                      activeOpacity={0.7}
-                    >
-                      <MaterialIcons
-                        name={tab.icon}
-                        size={18}
-                        color={isActive ? '#E91E63' : '#4B5563'}
-                      />
-                      <Text style={[styles.navText, isActive && styles.navTextActive]}>
-                        {tab.name}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              {isLarge ? (
+                <View style={styles.navMenu}>
+                  {sidebarTabs.map((tab) => {
+                    const isActive = activeTab === tab.name;
+                    return (
+                      <TouchableOpacity
+                        key={tab.name}
+                        style={[styles.navItem, isActive && styles.navItemActive]}
+                        onPress={() => setActiveTab(tab.name)}
+                        activeOpacity={0.7}
+                      >
+                        <MaterialIcons
+                          name={tab.icon}
+                          size={18}
+                          color={isActive ? '#E91E63' : '#4B5563'}
+                        />
+                        <Text style={[styles.navText, isActive && styles.navTextActive]}>
+                          {tab.name}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ) : (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.mobileTabsScroll}>
+                  {sidebarTabs.map((tab) => {
+                    const isActive = activeTab === tab.name;
+                    return (
+                      <TouchableOpacity
+                        key={tab.name}
+                        style={[styles.mobileTabPill, isActive && styles.mobileTabPillActive]}
+                        onPress={() => setActiveTab(tab.name)}
+                        activeOpacity={0.7}
+                      >
+                        <MaterialIcons
+                          name={tab.icon}
+                          size={16}
+                          color={isActive ? '#E91E63' : '#4B5563'}
+                        />
+                        <Text style={[styles.mobileTabText, isActive && styles.mobileTabTextActive]}>
+                          {tab.name}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              )}
             </View>
 
             {/* Sidebar Action Buttons */}
-            <View style={styles.sidebarActions}>
-              <TouchableOpacity style={styles.actionButtonSidebar} activeOpacity={0.8}>
-                <MaterialIcons name="download" size={16} color="#FFFFFF" />
-                <Text style={styles.actionButtonText}>Download Report</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.actionButtonSidebar, { backgroundColor: '#DC2626' }]} activeOpacity={0.8}>
-                <MaterialIcons name="report" size={16} color="#FFFFFF" />
-                <Text style={styles.actionButtonText}>Report to Authority</Text>
-              </TouchableOpacity>
-            </View>
+            {isLarge && (
+              <View style={styles.sidebarActions}>
+                <TouchableOpacity style={styles.actionButtonSidebar} activeOpacity={0.8}>
+                  <MaterialIcons name="download" size={16} color="#FFFFFF" />
+                  <Text style={styles.actionButtonText}>Download Report</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.actionButtonSidebar, { backgroundColor: '#DC2626' }]} activeOpacity={0.8}>
+                  <MaterialIcons name="report" size={16} color="#FFFFFF" />
+                  <Text style={styles.actionButtonText}>Report to Authority</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
 
           {/* Main Content Area */}
           <ScrollView style={styles.contentArea} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
             {/* Top Header */}
-            <View style={styles.header}>
+            <View style={[styles.header, !isLarge && { flexDirection: 'column', alignItems: 'flex-start', gap: 12 }]}>
               <TouchableOpacity onPress={() => router.push('/dashboard')} style={styles.backButton} activeOpacity={0.7}>
                 <MaterialIcons name="arrow-back" size={20} color="#111827" />
               </TouchableOpacity>
@@ -481,7 +518,7 @@ export default function ReportsScreen() {
             {activeTab === 'Overview' && (
               <View style={{ gap: 24 }}>
                 {/* Top KPI Banner */}
-                <View style={styles.topKpiRow}>
+                <View style={[styles.topKpiRow, !isLarge && { flexDirection: 'column' }]}>
                   <View style={[styles.kpiBannerCard, { flex: 1.2 }]}>
                     <View style={styles.crsCircleBox}>
                       <Text style={styles.crsScoreNumber}>{researchRisk?.crs != null ? researchRisk.crs.toFixed(1) : '58.0'}</Text>
@@ -529,7 +566,7 @@ export default function ReportsScreen() {
                 </View>
 
                 {/* Current Message Summary & Recent Risk Timeline */}
-                <View style={styles.mainGridRow}>
+                <View style={[styles.mainGridRow, !isLarge && { flexDirection: 'column' }]}>
                   {/* Left: Current Message Summary */}
                   <View style={[styles.panelCard, { flex: 1.3 }]}>
                     <View style={styles.sectionHeaderRow}>
@@ -554,7 +591,7 @@ export default function ReportsScreen() {
                     </View>
 
                     {/* Targeting, Severity, Multimodal Compact Cards */}
-                    <View style={styles.analysisSplitRow}>
+                    <View style={[styles.analysisSplitRow, !isLarge && { flexDirection: 'column' }]}>
                       <View style={styles.subAnalysisBox}>
                         <Text style={styles.subBoxTitle}>Targeting Analysis</Text>
                         <Text style={styles.subBoxScore}>0.62 <Text style={styles.moderateTag}>Moderate</Text></Text>
@@ -626,7 +663,7 @@ export default function ReportsScreen() {
                   </View>
                 </View>
 
-                <View style={styles.mainGridRow}>
+                <View style={[styles.mainGridRow, !isLarge && { flexDirection: 'column' }]}>
                   <View style={styles.subAnalysisBox}>
                     <Text style={styles.subBoxTitle}>Targeting Analysis</Text>
                     <Text style={styles.subBoxScore}>0.62 <Text style={styles.moderateTag}>Moderate</Text></Text>
@@ -706,7 +743,7 @@ export default function ReportsScreen() {
 
             {/* TAB 4: RISK TRENDS */}
             {activeTab === 'Risk Trends' && (
-              <View style={styles.mainGridRow}>
+              <View style={[styles.mainGridRow, !isLarge && { flexDirection: 'column' }]}>
                 {/* Left: Risk Trend Analysis Chart */}
                 <View style={[styles.panelCard, { flex: 1.4 }]}>
                   <Text style={styles.panelTitle}>Risk Trend Analysis <Text style={{ fontSize: 11, color: '#2563EB', fontWeight: '700' }}>◆ Risk Score (CRS)   ■ Incidents</Text></Text>
@@ -784,7 +821,7 @@ export default function ReportsScreen() {
 
             {/* TAB 6: SOCIAL CONTEXT */}
             {activeTab === 'Social Context' && (
-              <View style={styles.mainGridRow}>
+              <View style={[styles.mainGridRow, !isLarge && { flexDirection: 'column' }]}>
                 {/* Left: Metrics */}
                 <View style={[styles.panelCard, { flex: 1 }]}>
                   <Text style={styles.panelTitle}>Social Context</Text>
@@ -924,6 +961,24 @@ const styles = StyleSheet.create({
   },
   navText: { fontSize: 13, fontWeight: '700', color: '#4B5563' },
   navTextActive: { color: '#E91E63', fontWeight: '800' },
+  mobileTabsScroll: { gap: 8, paddingVertical: 4 },
+  mobileTabPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    gap: 6,
+  },
+  mobileTabPillActive: {
+    backgroundColor: 'rgba(233, 30, 99, 0.15)',
+    borderColor: 'rgba(233, 30, 99, 0.4)',
+  },
+  mobileTabText: { fontSize: 12, fontWeight: '700', color: '#4B5563' },
+  mobileTabTextActive: { color: '#E91E63', fontWeight: '900' },
   sidebarActions: { gap: 10, marginTop: 20 },
   actionButtonSidebar: {
     flexDirection: 'row',

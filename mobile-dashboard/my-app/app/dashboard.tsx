@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   RefreshControl,
   Modal,
+  Dimensions,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -35,51 +36,7 @@ import {
   type SocialGraphRisk,
 } from '../services/alertsService';
 
-const riskComponentLabels = [
-  ['classifier_probability', 'Cyberbullying classifier probability'],
-  ['targeting', 'Targeting'],
-  ['severity', 'Severity'],
-  ['multimodal', 'Multimodal Evidence'],
-  ['temporal', 'Temporal'],
-  ['escalation', 'Escalation'],
-  ['social_graph', 'Social'],
-  ['historical', 'Historical'],
-] as const;
-
-const displayComponentValue = (
-  value: number | null | undefined,
-  status?: string,
-  evidenceCount?: number,
-) => {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value.toFixed(3);
-  }
-  if (status === 'observed_uncalibrated' && evidenceCount) {
-    return `Observed (${evidenceCount})`;
-  }
-  if (status === 'observed_descriptive') return 'Descriptive only';
-  if (status === 'text_available_optional_media_not_provided') return 'Text available';
-  if (status === 'no_additional_multimodal_evidence') return 'No additional evidence';
-  if (status === 'current_message_unavailable') return 'Not available';
-  if (status?.includes('insufficient') || status?.includes('uncalibrated')) {
-    return 'Insufficient evidence';
-  }
-  return 'Not available';
-};
-
-const displayEvidenceCount = (value: number | null | undefined) =>
-  typeof value === 'number' && Number.isFinite(value) ? String(value) : 'Not available';
-
-const displayModalityStatus = (status?: string | null) => {
-  if (status === 'available') return 'Available';
-  if (status === 'not_provided') return 'Not provided';
-  return status ?? 'Not available';
-};
-
-const displayResearchPercent = (value: number | null | undefined) =>
-  typeof value === 'number' && Number.isFinite(value)
-    ? `${(value * 100).toFixed(1)}%`
-    : 'Not available';
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const DashboardScreen: React.FC = () => {
   const router = useRouter();
@@ -90,6 +47,16 @@ const DashboardScreen: React.FC = () => {
     }
     return null;
   };
+
+  const [screenWidth, setScreenWidth] = useState<number>(SCREEN_WIDTH);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => setScreenWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const isLarge = screenWidth >= 768;
 
   const [parentEmail] = useState<string>(getStoredEmail() || '');
   const [availableChildren, setAvailableChildren] = useState<string[]>([]);
@@ -311,9 +278,9 @@ const DashboardScreen: React.FC = () => {
     >
       <SafeAreaView style={{ flex: 1 }}>
         <StatusBar style="dark" />
-        <View style={styles.mainContainer}>
+        <View style={[styles.mainContainer, { flexDirection: isLarge ? 'row' : 'column' }]}>
           {/* Left Sidebar */}
-          <View style={styles.sidebar}>
+          <View style={[styles.sidebar, { width: isLarge ? 260 : '100%', borderRightWidth: isLarge ? 1.5 : 0, borderBottomWidth: isLarge ? 0 : 1.5 }]}>
             <View style={styles.sidebarHeader}>
               <View style={styles.logoBadge}>
                 <MaterialIcons name="security" size={24} color="#FFFFFF" />
@@ -334,7 +301,7 @@ const DashboardScreen: React.FC = () => {
             </View>
 
             {/* Navigation Menu */}
-            <View style={styles.navMenu}>
+            <View style={[styles.navMenu, { flexDirection: isLarge ? 'column' : 'row', flexWrap: isLarge ? 'nowrap' : 'wrap', gap: 6 }]}>
               {[
                 { name: 'Dashboard', icon: 'dashboard' },
                 { name: 'Incidents', icon: 'notifications', badge: stats.pending_count > 0 ? stats.pending_count : undefined },
@@ -345,7 +312,7 @@ const DashboardScreen: React.FC = () => {
                 return (
                   <TouchableOpacity
                     key={item.name}
-                    style={[styles.navItem, isActive && styles.navItemActive]}
+                    style={[styles.navItem, isActive && styles.navItemActive, !isLarge && { flexGrow: 1, minWidth: 120 }]}
                     onPress={() => {
                       setActiveNav(item.name as any);
                       if (item.name === 'Settings') router.push('/settings');
@@ -376,12 +343,14 @@ const DashboardScreen: React.FC = () => {
             </View>
 
             {/* Bottom Helper Card */}
-            <View style={styles.sidebarHelperCard}>
-              <View style={styles.helperIllustration}>
-                <MaterialIcons name="favorite" size={28} color="#E91E63" />
+            {isLarge && (
+              <View style={styles.sidebarHelperCard}>
+                <View style={styles.helperIllustration}>
+                  <MaterialIcons name="favorite" size={28} color="#E91E63" />
+                </View>
+                <Text style={styles.helperText}>Helping you keep {selectedChild || 'Sachi'} safe online 💕</Text>
               </View>
-              <Text style={styles.helperText}>Helping you keep {selectedChild || 'Sachi'} safe online 💕</Text>
-            </View>
+            )}
           </View>
 
           {/* Main Content Area */}
@@ -392,14 +361,14 @@ const DashboardScreen: React.FC = () => {
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshData} />}
           >
             {/* Top Bar Header */}
-            <View style={styles.topBar}>
+            <View style={[styles.topBar, !isLarge && { flexDirection: 'column', alignItems: 'flex-start', gap: 12 }]}>
               <View>
                 <Text style={styles.greetingTitle}>Hello,</Text>
                 <Text style={styles.greetingSubtitle}>
                   Here's {selectedChild || 'Sachi'}'s online safety summary for today
                 </Text>
               </View>
-              <View style={styles.topBarRight}>
+              <View style={[styles.topBarRight, !isLarge && { width: '100%', justifyContent: 'space-between', flexWrap: 'wrap' }]}>
                 <View style={styles.dateSelector}>
                   <MaterialIcons name="calendar-today" size={16} color="#374151" />
                   <Text style={styles.dateSelectorText}>Today</Text>
@@ -443,7 +412,7 @@ const DashboardScreen: React.FC = () => {
             )}
 
             {/* Top 4 KPI Metric Cards */}
-            <View style={styles.metricsRow}>
+            <View style={[styles.metricsRow, !isLarge && { flexDirection: 'column' }]}>
               {/* Card 1: CRS Risk Score */}
               <View style={styles.kpiCard}>
                 <View style={styles.kpiCardHeader}>
