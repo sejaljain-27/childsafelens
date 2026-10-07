@@ -113,7 +113,7 @@ const DashboardScreen: React.FC = () => {
   const [riskExplanation, setRiskExplanation] = useState<IncidentExplanation | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
-  const [activeNav, setActiveNav] = useState<'Dashboard' | 'Messages' | 'Incidents' | 'Analytics' | 'Settings'>('Dashboard');
+  const [activeNav, setActiveNav] = useState<'Dashboard' | 'Incidents' | 'Analytics' | 'Settings'>('Dashboard');
 
   const loadData = useCallback(async () => {
     if (!parentEmail) return;
@@ -337,7 +337,6 @@ const DashboardScreen: React.FC = () => {
             <View style={styles.navMenu}>
               {[
                 { name: 'Dashboard', icon: 'dashboard' },
-                { name: 'Messages', icon: 'message' },
                 { name: 'Incidents', icon: 'notifications', badge: stats.pending_count > 0 ? stats.pending_count : undefined },
                 { name: 'Analytics', icon: 'bar-chart' },
                 { name: 'Settings', icon: 'settings' },
@@ -510,7 +509,7 @@ const DashboardScreen: React.FC = () => {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <MaterialIcons name="notification-important" size={20} color="#E91E63" />
                   <Text style={styles.columnTitle}>
-                    {activeNav === 'Dashboard' ? 'Recent Incidents' : activeNav === 'Incidents' ? 'All Incidents' : 'All Messages'}
+                    {activeNav === 'Dashboard' ? 'Recent Incidents' : 'All Incidents'}
                   </Text>
                 </View>
                 <TouchableOpacity onPress={() => setActiveNav(activeNav === 'Dashboard' ? 'Incidents' : 'Dashboard')}>
