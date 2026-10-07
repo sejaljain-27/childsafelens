@@ -215,13 +215,6 @@ const DashboardScreen: React.FC = () => {
       const incoming = filtered.filter(i => i.type?.toUpperCase() === 'INCOMING');
       setOutgoingIncidents(outgoing);
       setIncomingIncidents(incoming);
-
-      const allList = [...outgoing, ...incoming];
-      if (allList.length > 0 && (!selectedIncident || !allList.some(inc => inc.incidentId === selectedIncident.incidentId))) {
-        setSelectedIncident(allList[0]);
-      } else if (allList.length === 0) {
-        setSelectedIncident(null);
-      }
     } catch (error) {
       if (error instanceof ParentSessionExpiredError) return;
       console.error('Failed to load connected child profiles:', error);
@@ -245,7 +238,7 @@ const DashboardScreen: React.FC = () => {
     } finally {
       setRefreshing(false);
     }
-  }, [parentEmail, selectedChild, selectedIncident]);
+  }, [parentEmail, selectedChild]);
 
   const refreshData = async () => {
     setRefreshing(true);
@@ -511,449 +504,353 @@ const DashboardScreen: React.FC = () => {
               </View>
             </View>
 
-            {/* Split Layout: Recent Incidents (Left) & Incident Details / Actions (Right) */}
-            <View style={styles.splitLayout}>
-              {/* Left Column: Recent Incidents */}
-              <View style={styles.recentIncidentsColumn}>
-                <View style={styles.sectionHeaderRow}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <MaterialIcons name="notification-important" size={20} color="#E91E63" />
-                    <Text style={styles.columnTitle}>Recent Incidents</Text>
-                  </View>
-                  <TouchableOpacity onPress={() => loadData()}>
-                    <Text style={styles.viewAllText}>View all →</Text>
-                  </TouchableOpacity>
+            {/* Recent Incidents / All Incidents Section based on activeNav */}
+            <View style={styles.recentIncidentsSectionFullWidth}>
+              <View style={styles.sectionHeaderRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <MaterialIcons name="notification-important" size={20} color="#E91E63" />
+                  <Text style={styles.columnTitle}>
+                    {activeNav === 'Dashboard' ? 'Recent Incidents' : activeNav === 'Incidents' ? 'All Incidents' : 'All Messages'}
+                  </Text>
                 </View>
-                <Text style={styles.columnSubtitle}>Messages that need your attention</Text>
-
-                {allFilteredIncidents.length === 0 ? (
-                  <View style={styles.emptyCard}>
-                    <MaterialIcons name="check-circle" size={40} color="#10B981" />
-                    <Text style={styles.emptyText}>No high-risk or pending incidents. All messages are clean!</Text>
-                  </View>
-                ) : (
-                  allFilteredIncidents.map((incident) => {
-                    const isSelected = selectedIncident?.incidentId === incident.incidentId;
-                    const isOutgoing = (incident.type?.toUpperCase() === 'OUTGOING') || !incident.type;
-                    const level = (incident.riskLevel || 'HIGH').toUpperCase();
-                    const riskBadgeColor = level.includes('CRITICAL') || level.includes('HIGH') ? '#DC2626' : '#D97706';
-                    const riskBg = level.includes('CRITICAL') || level.includes('HIGH') ? '#FEE2E2' : '#FEF3C7';
-                    const formattedTime = new Date(incident.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-                    return (
-                      <TouchableOpacity
-                        key={incident.incidentId}
-                        style={[styles.incidentItemCard, isSelected && styles.incidentItemCardSelected]}
-                        onPress={() => setSelectedIncident(incident)}
-                        activeOpacity={0.8}
-                      >
-                        <View style={styles.incidentItemTop}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                            <View style={[styles.directionIconBox, { backgroundColor: isOutgoing ? '#FEE2E2' : '#DBEAFE' }]}>
-                              <MaterialIcons
-                                name={isOutgoing ? 'north-east' : 'south-west'}
-                                size={14}
-                                color={isOutgoing ? '#DC2626' : '#2563EB'}
-                              />
-                            </View>
-                            <Text style={styles.incidentDirectionText}>
-                              {isOutgoing ? 'Outgoing' : 'Incoming'}
-                            </Text>
-                          </View>
-                          <View style={[styles.riskLevelPill, { backgroundColor: riskBg }]}>
-                            <Text style={[styles.riskLevelPillText, { color: riskBadgeColor }]}>
-                              {level.includes('HIGH') ? 'HIGH RISK' : level.includes('MEDIUM') ? 'MEDIUM RISK' : 'CRITICAL RISK'}
-                            </Text>
-                          </View>
-                        </View>
-
-                        <Text style={styles.incidentSnippetText} numberOfLines={2}>
-                          "{incident.messageSnippet || 'Harmful message detected'}"
-                        </Text>
-
-                        <View style={styles.incidentItemFooter}>
-                          <Text style={styles.incidentTimeText}>{formattedTime}</Text>
-                          <Text style={styles.incidentCategoryText}>
-                            {incident.category || (incident.riskScore ? `Risk: ${(incident.riskScore * 100).toFixed(0)}%` : 'Harmful')}
-                          </Text>
-                          <MaterialIcons name="chevron-right" size={18} color="#9CA3AF" />
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })
-                )}
+                <TouchableOpacity onPress={() => setActiveNav(activeNav === 'Dashboard' ? 'Incidents' : 'Dashboard')}>
+                  <Text style={styles.viewAllText}>{activeNav === 'Dashboard' ? 'View all →' : '← Show Recent'}</Text>
+                </TouchableOpacity>
               </View>
+              <Text style={styles.columnSubtitle}>
+                {activeNav === 'Dashboard'
+                  ? 'Most recent messages that need your attention. Click any message to inspect details.'
+                  : 'All logged safety incidents and messages.'}
+              </Text>
 
-              {/* Right Column: Message Incident Details Panel */}
-              <View style={styles.detailsColumn}>
-                <View style={styles.detailsHeaderRow}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <MaterialIcons name="info" size={20} color="#2563EB" />
-                    <Text style={styles.columnTitle}>Message Incident Details</Text>
-                  </View>
-                  <TouchableOpacity onPress={() => setSelectedIncident(null)}>
-                    <MaterialIcons name="close" size={20} color="#4B5563" />
-                  </TouchableOpacity>
+              {allFilteredIncidents.length === 0 ? (
+                <View style={styles.emptyCard}>
+                  <MaterialIcons name="check-circle" size={40} color="#10B981" />
+                  <Text style={styles.emptyText}>No high-risk or pending incidents. All messages are clean!</Text>
                 </View>
+              ) : (
+                (activeNav === 'Dashboard' ? allFilteredIncidents.slice(0, 5) : allFilteredIncidents).map((incident) => {
+                  const isOutgoing = (incident.type?.toUpperCase() === 'OUTGOING') || !incident.type;
+                  const level = (incident.riskLevel || 'HIGH').toUpperCase();
+                  const riskBadgeColor = level.includes('CRITICAL') || level.includes('HIGH') ? '#DC2626' : '#D97706';
+                  const riskBg = level.includes('CRITICAL') || level.includes('HIGH') ? '#FEE2E2' : '#FEF3C7';
+                  const formattedTime = new Date(incident.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-                {!selectedIncident ? (
-                  <View style={styles.emptyCard}>
-                    <Text style={styles.emptyText}>Select an incident from the left list to inspect detailed risk analysis, findings, and take action.</Text>
-                  </View>
-                ) : (
-                  <View style={styles.detailsCardBody}>
-                    {/* Message Header info */}
-                    <View style={styles.detailMessageMetaRow}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        <MaterialIcons
-                          name={selectedIncident.type?.toUpperCase() === 'OUTGOING' ? 'north-east' : 'south-west'}
-                          size={16}
-                          color={selectedIncident.type?.toUpperCase() === 'OUTGOING' ? '#DC2626' : '#2563EB'}
-                        />
-                        <Text style={styles.detailMessageTypeText}>
-                          {selectedIncident.type?.toUpperCase() === 'OUTGOING' ? 'Outgoing Message' : 'Incoming Message'}
-                        </Text>
-                      </View>
-                      <Text style={styles.detailMessageTimeText}>
-                        {new Date(selectedIncident.timestamp).toLocaleString()}
-                      </Text>
-                    </View>
-
-                    <View style={styles.detailMessageBox}>
-                      <Text style={styles.detailMessageText}>
-                        "{selectedIncident.messageSnippet || 'No text snippet'}"
-                      </Text>
-                      <View style={styles.detailMessageBadgeRow}>
-                        <View style={styles.detailRiskPill}>
-                          <MaterialIcons name="warning" size={12} color="#DC2626" />
-                          <Text style={styles.detailRiskPillText}>
-                            {selectedIncident.riskLevel || 'HIGH RISK'}
-                          </Text>
-                        </View>
-                        <Text style={styles.detailCategoryLabel}>
-                          Category: {selectedIncident.category || 'Humiliation'}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {/* Tabs row */}
-                    <View style={styles.detailTabsRow}>
-                      {(['Summary', 'Full Analysis', 'Chat Context', 'Evidence'] as const).map((tab) => {
-                        const isTabActive = detailTab === tab;
-                        return (
-                          <TouchableOpacity
-                            key={tab}
-                            style={[styles.detailTabButton, isTabActive && styles.detailTabButtonActive]}
-                            onPress={() => setDetailTab(tab)}
-                          >
-                            <Text style={[styles.detailTabText, isTabActive && styles.detailTabTextActive]}>
-                              {tab}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-
-                    {detailTab === 'Summary' && (
-                      <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
-                        {/* Risk score progress bar */}
-                        <View style={styles.riskProgressSection}>
-                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-                            <Text style={styles.riskProgressTitle}>Risk Score for this message</Text>
-                            <Text style={styles.riskProgressScoreText}>
-                              {selectedIncident.riskScore != null
-                                ? `${(selectedIncident.riskScore * 100).toFixed(1)}%`
-                                : '88.9%'}
-                              <Text style={{ fontSize: 11, color: '#DC2626' }}> (High Risk)</Text>
-                            </Text>
-                          </View>
-                          <View style={styles.progressBarTrack}>
-                            <View
-                              style={[
-                                styles.progressBarFill,
-                                {
-                                  width: `${Math.min(
-                                    100,
-                                    Math.max(
-                                      10,
-                                      (selectedIncident.riskScore ?? 0.889) * 100
-                                    )
-                                  )}%`,
-                                },
-                              ]}
+                  return (
+                    <TouchableOpacity
+                      key={incident.incidentId}
+                      style={styles.incidentItemCardFullWidth}
+                      onPress={() => {
+                        setSelectedIncident(incident);
+                        setViewModalVisible(true);
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      <View style={styles.incidentItemTop}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <View style={[styles.directionIconBox, { backgroundColor: isOutgoing ? '#FEE2E2' : '#DBEAFE' }]}>
+                            <MaterialIcons
+                              name={isOutgoing ? 'north-east' : 'south-west'}
+                              size={14}
+                              color={isOutgoing ? '#DC2626' : '#2563EB'}
                             />
                           </View>
-                        </View>
-
-                        {/* What this means callout */}
-                        <View style={styles.whatThisMeansBox}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                            <MaterialIcons name="info" size={16} color="#B91C1C" />
-                            <Text style={styles.whatThisMeansTitle}>What this means</Text>
-                          </View>
-                          <Text style={styles.whatThisMeansText}>
-                            This message contains harmful or aggressive language directed at another person. It may indicate cyberbullying behavior requiring parent guidance.
+                          <Text style={styles.incidentDirectionText}>
+                            {isOutgoing ? 'Outgoing' : 'Incoming'}
                           </Text>
                         </View>
-
-                        {/* Key Findings */}
-                        <Text style={styles.keyFindingsTitle}>Key Findings</Text>
-                        <View style={styles.keyFindingsList}>
-                          <View style={styles.keyFindingRow}>
-                            <Text style={styles.keyFindingKey}>Message type</Text>
-                            <Text style={styles.keyFindingVal}>
-                              {selectedIncident.type?.toUpperCase() === 'OUTGOING' ? 'Outgoing (sent by child)' : 'Incoming (received by child)'}
-                            </Text>
-                          </View>
-                          <View style={styles.keyFindingRow}>
-                            <Text style={styles.keyFindingKey}>Risk category</Text>
-                            <Text style={styles.keyFindingVal}>
-                              {selectedIncident.category || 'Humiliation, Insult'}
-                            </Text>
-                          </View>
-                          <View style={styles.keyFindingRow}>
-                            <Text style={styles.keyFindingKey}>Severity</Text>
-                            <Text style={[styles.keyFindingVal, { color: '#DC2626', fontWeight: '800' }]}>
-                              {selectedIncident.riskScore != null ? `${(selectedIncident.riskScore * 100).toFixed(0)}%` : 'High'}
-                            </Text>
-                          </View>
-                          <View style={styles.keyFindingRow}>
-                            <Text style={styles.keyFindingKey}>Confidence</Text>
-                            <Text style={styles.keyFindingVal}>
-                              {selectedIncident.riskScore != null ? `${(selectedIncident.riskScore * 100).toFixed(1)}%` : '88.9%'}
-                            </Text>
-                          </View>
-                          <View style={styles.keyFindingRow}>
-                            <Text style={styles.keyFindingKey}>Targeting evidence</Text>
-                            <Text style={styles.keyFindingVal}>
-                              Direct personal attack, second person reference
-                            </Text>
-                          </View>
-                          <View style={styles.keyFindingRow}>
-                            <Text style={styles.keyFindingKey}>Potential impact</Text>
-                            <Text style={styles.keyFindingVal}>
-                              May harm peer relationships and indicate bullying behavior
-                            </Text>
-                          </View>
+                        <View style={[styles.riskLevelPill, { backgroundColor: riskBg }]}>
+                          <Text style={[styles.riskLevelPillText, { color: riskBadgeColor }]}>
+                            {level.includes('HIGH') ? 'HIGH RISK' : level.includes('MEDIUM') ? 'MEDIUM RISK' : 'CRITICAL RISK'}
+                          </Text>
                         </View>
-                      </ScrollView>
-                    )}
+                      </View>
 
-                    {detailTab === 'Full Analysis' && (
-                      <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
-                        <Text style={styles.tabContentHeading}>Classifier & Risk Fusion Analysis</Text>
-                        <Text style={styles.tabContentText}>Model Version: {researchRisk?.classifier?.model_version || 'cyberbullying-cascade-v4'}</Text>
-                        <Text style={styles.tabContentText}>Classifier Status: {researchRisk?.classifier?.status || 'real'}</Text>
-                        <Text style={styles.tabContentText}>CRS Score: {researchRisk?.crs != null ? `${researchRisk.crs.toFixed(1)} / 100` : 'Not available'}</Text>
-                        <Text style={styles.tabContentText}>Risk State: {researchRisk?.risk_state || 'Loading'}</Text>
-                        <Text style={[styles.tabContentHeading, { marginTop: 12 }]}>Deterministic Contributions</Text>
-                        {researchRisk?.deterministic_contributions?.map(item => (
-                          <View key={item.feature} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 }}>
-                            <Text style={styles.tabContentText}>{item.feature}</Text>
-                            <Text style={styles.tabContentText}>{item.contribution_percent.toFixed(1)}%</Text>
-                          </View>
-                        )) || <Text style={styles.tabContentText}>No deterministic contributions available.</Text>}
-                      </ScrollView>
-                    )}
+                      <Text style={styles.incidentSnippetText} numberOfLines={2}>
+                        "{incident.messageSnippet || 'Harmful message detected'}"
+                      </Text>
 
-                    {detailTab === 'Chat Context' && (
-                      <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
-                        <Text style={styles.tabContentHeading}>Chat & Conversation Context</Text>
-                        <Text style={styles.tabContentText}>Child Profile ID: {selectedChildId || 'N/A'}</Text>
-                        <Text style={styles.tabContentText}>Parent Email: {parentEmail}</Text>
-                        <Text style={styles.tabContentText}>Incident ID: {selectedIncident.incidentId}</Text>
-                        <Text style={styles.tabContentText}>Timestamp: {new Date(selectedIncident.timestamp).toLocaleString()}</Text>
-                        <Text style={[styles.tabContentText, { marginTop: 8 }]}>
-                          Message sequence in active session is monitored for escalation and frequency patterns.
+                      <View style={styles.incidentItemFooter}>
+                        <Text style={styles.incidentTimeText}>{formattedTime}</Text>
+                        <Text style={styles.incidentCategoryText}>
+                          {incident.category || (incident.riskScore ? `Risk: ${(incident.riskScore * 100).toFixed(0)}%` : 'Harmful')}
                         </Text>
-                      </ScrollView>
-                    )}
-
-                    {detailTab === 'Evidence' && (
-                      <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
-                        <Text style={styles.tabContentHeading}>Observed Evidence & Modalities</Text>
-                        <Text style={styles.tabContentText}>Text Modality: Available ({selectedIncident.messageSnippet?.length || 0} chars)</Text>
-                        <Text style={styles.tabContentText}>Image Modality: Not provided</Text>
-                        <Text style={styles.tabContentText}>Audio Modality: Not provided</Text>
-                        <Text style={styles.tabContentText}>Video Modality: Not provided</Text>
-                        <Text style={[styles.tabContentHeading, { marginTop: 12 }]}>Severity Cues</Text>
-                        <Text style={styles.tabContentText}>• Direct aggressive language cue detected.</Text>
-                      </ScrollView>
-                    )}
-
-                    {/* Parent Action Buttons: VIEW for outgoing, VIEW (ALLOW) / BLOCK for incoming */}
-                    <View style={styles.decisionButtonsRow}>
-                      {((selectedIncident.type?.toUpperCase() === 'OUTGOING') || !selectedIncident.type) ? (
-                        <TouchableOpacity
-                          style={[styles.decisionButton, styles.viewButton]}
-                          onPress={() => setViewModalVisible(true)}
-                          activeOpacity={0.8}
-                        >
-                          <MaterialIcons name="visibility" size={16} color="#2563EB" />
-                          <Text style={[styles.decisionButtonText, { color: '#2563EB' }]}>VIEW</Text>
-                        </TouchableOpacity>
-                      ) : (
-                        <>
-                          <TouchableOpacity
-                            style={[styles.decisionButton, styles.allowButton]}
-                            onPress={async () => {
-                              if (!selectedIncident) return;
-                              try {
-                                await submitDecision(selectedIncident.incidentId, 'ALLOW');
-                              } catch (e) {
-                                console.warn('Allow API failed, applying local fallback', e);
-                              }
-                              setIncomingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
-                              setOutgoingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
-                              setSelectedIncident(null);
-                              setViewModalVisible(false);
-                              alert('Incoming message allowed (viewable and sent).');
-                            }}
-                            activeOpacity={0.8}
-                          >
-                            <MaterialIcons name="check-circle" size={16} color="#16A34A" />
-                            <Text style={[styles.decisionButtonText, { color: '#16A34A' }]}>VIEW / ALLOW</Text>
-                          </TouchableOpacity>
-
-                          <TouchableOpacity
-                            style={[styles.decisionButton, styles.blockButton]}
-                            onPress={async () => {
-                              if (!selectedIncident) return;
-                              try {
-                                await submitDecision(selectedIncident.incidentId, 'BLOCK');
-                              } catch (e) {
-                                console.warn('Block API failed, applying local fallback', e);
-                              }
-                              setIncomingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
-                              setOutgoingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
-                              setSelectedIncident(null);
-                              setViewModalVisible(false);
-                              alert('Incoming message blocked (it won\'t send).');
-                            }}
-                            activeOpacity={0.8}
-                          >
-                            <MaterialIcons name="block" size={16} color="#DC2626" />
-                            <Text style={[styles.decisionButtonText, { color: '#DC2626' }]}>BLOCK</Text>
-                          </TouchableOpacity>
-                        </>
-                      )}
-                    </View>
-                  </View>
-                )}
-              </View>
+                        <MaterialIcons name="chevron-right" size={18} color="#9CA3AF" />
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
             </View>
 
-            {/* Bottom Research Summary Card */}
-            <View style={styles.bottomResearchSection}>
-              <View style={styles.researchRiskCard}>
-                <Text style={styles.researchRiskTitle}>Research Risk Assessment & Provenance</Text>
-                <Text style={styles.researchRiskText}>
-                  {researchRisk?.classifier?.status === 'dummy'
-                    ? 'Development/Dummy classifier (simulation only)'
-                    : researchRisk?.classifier?.status === 'real'
-                      ? 'Supplied PKL classifier connected (classification performance not independently validated)'
-                      : 'Classifier status: Not available'}
-                </Text>
-                <Text style={styles.researchRiskNote}>
-                  {researchRisk?.message || 'Dashboard monitors child interactions in real-time. Parent actions are separate from automated risk scoring.'}
-                </Text>
-              </View>
-            </View>
+
           </ScrollView>
         </View>
 
-        {/* View Details Inspection Modal */}
+        {/* Message Incident Details Overlay Modal */}
         <Modal
           visible={viewModalVisible}
           animationType="fade"
           transparent={true}
-          onRequestClose={() => setViewModalVisible(false)}
+          onRequestClose={() => {
+            setViewModalVisible(false);
+            setSelectedIncident(null);
+          }}
         >
           <View style={styles.modalOverlay}>
             <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
+              <View style={styles.detailsHeaderRow}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <MaterialIcons name="shield" size={22} color="#E91E63" />
-                  <Text style={styles.modalTitle}>Message Inspection</Text>
+                  <MaterialIcons name="info" size={20} color="#2563EB" />
+                  <Text style={styles.columnTitle}>Message Incident Details</Text>
                 </View>
-                <TouchableOpacity onPress={() => setViewModalVisible(false)}>
-                  <MaterialIcons name="close" size={22} color="#4B5563" />
+                <TouchableOpacity onPress={() => {
+                  setViewModalVisible(false);
+                  setSelectedIncident(null);
+                }}>
+                  <MaterialIcons name="close" size={20} color="#4B5563" />
                 </TouchableOpacity>
               </View>
 
               {selectedIncident && (
-                <ScrollView contentContainerStyle={{ paddingBottom: 20 }} showsVerticalScrollIndicator={false}>
-                  <View style={styles.modalMessageBox}>
-                    <Text style={styles.modalMessageLabel}>Message Content:</Text>
-                    <Text style={styles.modalMessageText}>"{selectedIncident.messageSnippet || 'No message content'}"</Text>
-                  </View>
-
-                  <View style={styles.keyFindingsList}>
-                    <View style={styles.keyFindingRow}>
-                      <Text style={styles.keyFindingKey}>Incident ID</Text>
-                      <Text style={styles.keyFindingVal}>{selectedIncident.incidentId}</Text>
-                    </View>
-                    <View style={styles.keyFindingRow}>
-                      <Text style={styles.keyFindingKey}>Message Type</Text>
-                      <Text style={styles.keyFindingVal}>
+                <ScrollView contentContainerStyle={{ paddingBottom: 10 }} showsVerticalScrollIndicator={false}>
+                  {/* Message Header info */}
+                  <View style={styles.detailMessageMetaRow}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <MaterialIcons
+                        name={selectedIncident.type?.toUpperCase() === 'OUTGOING' ? 'north-east' : 'south-west'}
+                        size={16}
+                        color={selectedIncident.type?.toUpperCase() === 'OUTGOING' ? '#DC2626' : '#2563EB'}
+                      />
+                      <Text style={styles.detailMessageTypeText}>
                         {selectedIncident.type?.toUpperCase() === 'OUTGOING' ? 'Outgoing Message' : 'Incoming Message'}
                       </Text>
                     </View>
-                    <View style={styles.keyFindingRow}>
-                      <Text style={styles.keyFindingKey}>Risk Level</Text>
-                      <Text style={[styles.keyFindingVal, { color: '#DC2626', fontWeight: '800' }]}>{selectedIncident.riskLevel}</Text>
-                    </View>
-                    <View style={styles.keyFindingRow}>
-                      <Text style={styles.keyFindingKey}>Category</Text>
-                      <Text style={styles.keyFindingVal}>{selectedIncident.category || 'Harmful Interaction'}</Text>
-                    </View>
-                    <View style={styles.keyFindingRow}>
-                      <Text style={styles.keyFindingKey}>Timestamp</Text>
-                      <Text style={styles.keyFindingVal}>{new Date(selectedIncident.timestamp).toLocaleString()}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.whatThisMeansBox}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                      <MaterialIcons name="info" size={16} color="#B91C1C" />
-                      <Text style={styles.whatThisMeansTitle}>Safety Assessment</Text>
-                    </View>
-                    <Text style={styles.whatThisMeansText}>
-                      This message was flagged by the safety classification engine. You can block further interactions from this sender or close this inspection.
+                    <Text style={styles.detailMessageTimeText}>
+                      {new Date(selectedIncident.timestamp).toLocaleString()}
                     </Text>
                   </View>
 
-                  <View style={styles.modalActionRow}>
-                    {selectedIncident.type?.toUpperCase() === 'INCOMING' && (
+                  <View style={styles.detailMessageBox}>
+                    <Text style={styles.detailMessageText}>
+                      "{selectedIncident.messageSnippet || 'No text snippet'}"
+                    </Text>
+                    <View style={styles.detailMessageBadgeRow}>
+                      <View style={styles.detailRiskPill}>
+                        <MaterialIcons name="warning" size={12} color="#DC2626" />
+                        <Text style={styles.detailRiskPillText}>
+                          {selectedIncident.riskLevel || 'HIGH RISK'}
+                        </Text>
+                      </View>
+                      <Text style={styles.detailCategoryLabel}>
+                        Category: {selectedIncident.category || 'Humiliation'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Tabs row */}
+                  <View style={styles.detailTabsRow}>
+                    {(['Summary', 'Full Analysis', 'Chat Context', 'Evidence'] as const).map((tab) => {
+                      const isTabActive = detailTab === tab;
+                      return (
+                        <TouchableOpacity
+                          key={tab}
+                          style={[styles.detailTabButton, isTabActive && styles.detailTabButtonActive]}
+                          onPress={() => setDetailTab(tab)}
+                        >
+                          <Text style={[styles.detailTabText, isTabActive && styles.detailTabTextActive]}>
+                            {tab}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {detailTab === 'Summary' && (
+                    <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+                      {/* Risk score progress bar */}
+                      <View style={styles.riskProgressSection}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                          <Text style={styles.riskProgressTitle}>Risk Score for this message</Text>
+                          <Text style={styles.riskProgressScoreText}>
+                            {selectedIncident.riskScore != null
+                              ? `${(selectedIncident.riskScore * 100).toFixed(1)}%`
+                              : '88.9%'}
+                            <Text style={{ fontSize: 11, color: '#DC2626' }}> (High Risk)</Text>
+                          </Text>
+                        </View>
+                        <View style={styles.progressBarTrack}>
+                          <View
+                            style={[
+                              styles.progressBarFill,
+                              {
+                                width: `${Math.min(
+                                  100,
+                                  Math.max(
+                                    10,
+                                    (selectedIncident.riskScore ?? 0.889) * 100
+                                  )
+                                )}%`,
+                              },
+                            ]}
+                          />
+                        </View>
+                      </View>
+
+                      {/* What this means callout */}
+                      <View style={styles.whatThisMeansBox}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                          <MaterialIcons name="info" size={16} color="#B91C1C" />
+                          <Text style={styles.whatThisMeansTitle}>What this means</Text>
+                        </View>
+                        <Text style={styles.whatThisMeansText}>
+                          This message contains harmful or aggressive language directed at another person. It may indicate cyberbullying behavior requiring parent guidance.
+                        </Text>
+                      </View>
+
+                      {/* Key Findings */}
+                      <Text style={styles.keyFindingsTitle}>Key Findings</Text>
+                      <View style={styles.keyFindingsList}>
+                        <View style={styles.keyFindingRow}>
+                          <Text style={styles.keyFindingKey}>Message type</Text>
+                          <Text style={styles.keyFindingVal}>
+                            {selectedIncident.type?.toUpperCase() === 'OUTGOING' ? 'Outgoing (sent by child)' : 'Incoming (received by child)'}
+                          </Text>
+                        </View>
+                        <View style={styles.keyFindingRow}>
+                          <Text style={styles.keyFindingKey}>Risk category</Text>
+                          <Text style={styles.keyFindingVal}>
+                            {selectedIncident.category || 'Humiliation, Insult'}
+                          </Text>
+                        </View>
+                        <View style={styles.keyFindingRow}>
+                          <Text style={styles.keyFindingKey}>Severity</Text>
+                          <Text style={[styles.keyFindingVal, { color: '#DC2626', fontWeight: '800' }]}>
+                            {selectedIncident.riskScore != null ? `${(selectedIncident.riskScore * 100).toFixed(0)}%` : 'High'}
+                          </Text>
+                        </View>
+                        <View style={styles.keyFindingRow}>
+                          <Text style={styles.keyFindingKey}>Confidence</Text>
+                          <Text style={styles.keyFindingVal}>
+                            {selectedIncident.riskScore != null ? `${(selectedIncident.riskScore * 100).toFixed(1)}%` : '88.9%'}
+                          </Text>
+                        </View>
+                        <View style={styles.keyFindingRow}>
+                          <Text style={styles.keyFindingKey}>Targeting evidence</Text>
+                          <Text style={styles.keyFindingVal}>
+                            Direct personal attack, second person reference
+                          </Text>
+                        </View>
+                        <View style={styles.keyFindingRow}>
+                          <Text style={styles.keyFindingKey}>Potential impact</Text>
+                          <Text style={styles.keyFindingVal}>
+                            May harm peer relationships and indicate bullying behavior
+                          </Text>
+                        </View>
+                      </View>
+                    </ScrollView>
+                  )}
+
+                  {detailTab === 'Full Analysis' && (
+                    <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+                      <Text style={styles.tabContentHeading}>Classifier & Risk Fusion Analysis</Text>
+                      <Text style={styles.tabContentText}>Model Version: {researchRisk?.classifier?.model_version || 'cyberbullying-cascade-v4'}</Text>
+                      <Text style={styles.tabContentText}>Classifier Status: {researchRisk?.classifier?.status || 'real'}</Text>
+                      <Text style={styles.tabContentText}>CRS Score: {researchRisk?.crs != null ? `${researchRisk.crs.toFixed(1)} / 100` : 'Not available'}</Text>
+                      <Text style={styles.tabContentText}>Risk State: {researchRisk?.risk_state || 'Loading'}</Text>
+                      <Text style={[styles.tabContentHeading, { marginTop: 12 }]}>Deterministic Contributions</Text>
+                      {researchRisk?.deterministic_contributions?.map(item => (
+                        <View key={item.feature} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 }}>
+                          <Text style={styles.tabContentText}>{item.feature}</Text>
+                          <Text style={styles.tabContentText}>{item.contribution_percent.toFixed(1)}%</Text>
+                        </View>
+                      )) || <Text style={styles.tabContentText}>No deterministic contributions available.</Text>}
+                    </ScrollView>
+                  )}
+
+                  {detailTab === 'Chat Context' && (
+                    <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+                      <Text style={styles.tabContentHeading}>Chat & Conversation Context</Text>
+                      <Text style={styles.tabContentText}>Child Profile ID: {selectedChildId || 'N/A'}</Text>
+                      <Text style={styles.tabContentText}>Parent Email: {parentEmail}</Text>
+                      <Text style={styles.tabContentText}>Incident ID: {selectedIncident.incidentId}</Text>
+                      <Text style={styles.tabContentText}>Timestamp: {new Date(selectedIncident.timestamp).toLocaleString()}</Text>
+                      <Text style={[styles.tabContentText, { marginTop: 8 }]}>
+                        Message sequence in active session is monitored for escalation and frequency patterns.
+                      </Text>
+                    </ScrollView>
+                  )}
+
+                  {detailTab === 'Evidence' && (
+                    <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+                      <Text style={styles.tabContentHeading}>Observed Evidence & Modalities</Text>
+                      <Text style={styles.tabContentText}>Text Modality: Available ({selectedIncident.messageSnippet?.length || 0} chars)</Text>
+                      <Text style={styles.tabContentText}>Image Modality: Not provided</Text>
+                      <Text style={styles.tabContentText}>Audio Modality: Not provided</Text>
+                      <Text style={styles.tabContentText}>Video Modality: Not provided</Text>
+                      <Text style={[styles.tabContentHeading, { marginTop: 12 }]}>Severity Cues</Text>
+                      <Text style={styles.tabContentText}>• Direct aggressive language cue detected.</Text>
+                    </ScrollView>
+                  )}
+
+                  {/* Parent Action Buttons */}
+                  <View style={styles.decisionButtonsRow}>
+                    {((selectedIncident.type?.toUpperCase() === 'OUTGOING') || !selectedIncident.type) ? (
                       <TouchableOpacity
-                        style={[styles.decisionButton, styles.blockButton, { flex: 1 }]}
-                        onPress={async () => {
-                          if (!selectedIncident) return;
-                          try {
-                            await submitDecision(selectedIncident.incidentId, 'BLOCK');
-                          } catch (e) {
-                            console.warn('Block API failed, applying local fallback', e);
-                          }
-                          setIncomingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
-                          setOutgoingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
-                          setSelectedIncident(null);
+                        style={[styles.decisionButton, styles.viewButton]}
+                        onPress={() => {
                           setViewModalVisible(false);
-                          alert('Incoming message blocked successfully.');
+                          setSelectedIncident(null);
                         }}
                         activeOpacity={0.8}
                       >
-                        <MaterialIcons name="block" size={18} color="#DC2626" />
-                        <Text style={[styles.decisionButtonText, { color: '#DC2626' }]}>BLOCK</Text>
+                        <Text style={[styles.decisionButtonText, { color: '#2563EB' }]}>CLOSE</Text>
                       </TouchableOpacity>
-                    )}
+                    ) : (
+                      <>
+                        <TouchableOpacity
+                          style={[styles.decisionButton, styles.allowButton]}
+                          onPress={async () => {
+                            if (!selectedIncident) return;
+                            try {
+                              await submitDecision(selectedIncident.incidentId, 'ALLOW');
+                            } catch (e) {
+                              console.warn('Allow API failed, applying local fallback', e);
+                            }
+                            setIncomingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
+                            setOutgoingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
+                            setSelectedIncident(null);
+                            setViewModalVisible(false);
+                            alert('Incoming message allowed (viewable and sent).');
+                          }}
+                          activeOpacity={0.8}
+                        >
+                          <MaterialIcons name="check-circle" size={16} color="#16A34A" />
+                          <Text style={[styles.decisionButtonText, { color: '#16A34A' }]}>VIEW / ALLOW</Text>
+                        </TouchableOpacity>
 
-                    <TouchableOpacity
-                      style={[styles.decisionButton, styles.viewButton, { flex: 1 }]}
-                      onPress={() => setViewModalVisible(false)}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={[styles.decisionButtonText, { color: '#2563EB' }]}>CLOSE</Text>
-                    </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.decisionButton, styles.blockButton]}
+                          onPress={async () => {
+                            if (!selectedIncident) return;
+                            try {
+                              await submitDecision(selectedIncident.incidentId, 'BLOCK');
+                            } catch (e) {
+                              console.warn('Block API failed, applying local fallback', e);
+                            }
+                            setIncomingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
+                            setOutgoingIncidents(prev => prev.filter(i => i.incidentId !== selectedIncident.incidentId));
+                            setSelectedIncident(null);
+                            setViewModalVisible(false);
+                            alert('Incoming message blocked (it won\'t send).');
+                          }}
+                          activeOpacity={0.8}
+                        >
+                          <MaterialIcons name="block" size={16} color="#DC2626" />
+                          <Text style={[styles.decisionButtonText, { color: '#DC2626' }]}>BLOCK</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
                   </View>
                 </ScrollView>
               )}
@@ -1196,34 +1093,17 @@ const styles = StyleSheet.create({
   kpiNumber: { fontSize: 26, fontWeight: '900', color: '#111827', marginBottom: 2 },
   kpiLabel: { fontSize: 13, fontWeight: '800', color: '#374151', marginBottom: 4 },
   kpiSubtext: { fontSize: 11, color: '#6B7280', fontWeight: '600', lineHeight: 15 },
-  splitLayout: {
-    flexDirection: 'row',
-    gap: 20,
+  recentIncidentsSectionFullWidth: {
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    borderRadius: 24,
+    padding: 24,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.95)',
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    elevation: 3,
     marginBottom: 28,
-  },
-  recentIncidentsColumn: {
-    flex: 1.1,
-    backgroundColor: 'rgba(255, 255, 255, 0.85)',
-    borderRadius: 24,
-    padding: 20,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.95)',
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    elevation: 3,
-  },
-  detailsColumn: {
-    flex: 1.2,
-    backgroundColor: 'rgba(255, 255, 255, 0.85)',
-    borderRadius: 24,
-    padding: 20,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.95)',
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    elevation: 3,
   },
   sectionHeaderRow: {
     flexDirection: 'row',
@@ -1231,31 +1111,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 4,
   },
-  columnTitle: { fontSize: 16, fontWeight: '900', color: '#111827' },
-  columnSubtitle: { fontSize: 12, color: '#6B7280', fontWeight: '600', marginBottom: 16 },
+  columnTitle: { fontSize: 18, fontWeight: '900', color: '#111827' },
+  columnSubtitle: { fontSize: 13, color: '#6B7280', fontWeight: '600', marginBottom: 20 },
   viewAllText: { fontSize: 13, fontWeight: '800', color: '#E91E63' },
   detailsHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+    paddingBottom: 12,
   },
-  incidentItemCard: {
+  incidentItemCardFullWidth: {
     backgroundColor: 'rgba(255, 255, 255, 0.95)',
     borderRadius: 16,
-    padding: 14,
-    marginBottom: 12,
+    padding: 16,
+    marginBottom: 14,
     borderWidth: 1.5,
     borderColor: 'rgba(229, 231, 235, 0.8)',
     shadowColor: '#000',
     shadowOpacity: 0.03,
     shadowRadius: 6,
     elevation: 2,
-  },
-  incidentItemCardSelected: {
-    borderColor: '#E91E63',
-    backgroundColor: 'rgba(233, 30, 99, 0.04)',
-    borderWidth: 2,
   },
   incidentItemTop: {
     flexDirection: 'row',
@@ -1278,11 +1156,11 @@ const styles = StyleSheet.create({
   },
   riskLevelPillText: { fontSize: 10, fontWeight: '800' },
   incidentSnippetText: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
     color: '#111827',
-    marginBottom: 10,
-    lineHeight: 18,
+    marginBottom: 12,
+    lineHeight: 20,
   },
   incidentItemFooter: {
     flexDirection: 'row',
@@ -1290,7 +1168,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     borderTopWidth: 1,
     borderTopColor: '#F3F4F6',
-    paddingTop: 8,
+    paddingTop: 10,
   },
   incidentTimeText: { fontSize: 11, color: '#6B7280', fontWeight: '600' },
   incidentCategoryText: { fontSize: 11, color: '#4B5563', fontWeight: '700' },
@@ -1305,7 +1183,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(229, 231, 235, 0.8)',
   },
   emptyText: { textAlign: 'center', color: '#4B5563', fontSize: 13, fontWeight: '600', lineHeight: 18 },
-  detailsCardBody: { flex: 1 },
   detailMessageMetaRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1472,31 +1349,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 15,
     elevation: 8,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
-    paddingBottom: 12,
-  },
-  modalTitle: { fontSize: 18, fontWeight: '900', color: '#111827' },
-  modalMessageBox: {
-    backgroundColor: '#F9FAFB',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-  },
-  modalMessageLabel: { fontSize: 12, fontWeight: '800', color: '#6B7280', marginBottom: 6, textTransform: 'uppercase' },
-  modalMessageText: { fontSize: 15, fontWeight: '700', color: '#111827', lineHeight: 22 },
-  modalActionRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 16,
   },
 });
 
