@@ -287,12 +287,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
 
         val isIncoming = (type == "INCOMING")
+        if (!isIncoming) {
+            setClassificationState(
+                message.id,
+                riskLevel,
+                if (result.developmentSimulation) "Development / simulation" else "Backend verified",
+                filteredText,
+                true
+            )
+            IncidentManager.createAndSendIncident(
+                incidentId = incidentId,
+                type = type,
+                message = text,
+                riskScore = score,
+                riskLevel = policy.riskLevel,
+                category = result.category ?: "potential_cyberbullying",
+                packageName = "com.childsafelens.demo",
+                predictionToken = result.predictionToken,
+                status = "ALLOWED"
+            )
+            return
+        }
+
         val hideInitially = policy.requiresParentApproval
         setClassificationState(
             message.id,
             riskLevel,
             if (result.developmentSimulation) "Development / simulation" else "Backend verified",
-            if (hideInitially) "" else text,
+            if (hideInitially) "[Message held for parent review]" else text,
             !hideInitially
         )
 
@@ -310,18 +332,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 viewModelScope.launch(Dispatchers.Main) {
                     when (decision.uppercase()) {
                         "ALLOW", "SHOW" -> updateMessageState(message.id, filteredText, true, false)
-                        "BLOCK", "HIDE" -> updateMessageState(
-                            message.id,
-                            "",
-                            false,
-                            true
-                        )
-                        "EDIT" -> updateMessageState(
-                            message.id,
-                            "Message requires rephrasing",
-                            !isIncoming,
-                            false
-                        )
+                        "BLOCK", "HIDE" -> updateMessageState(message.id, "[Blocked by parent]", false, true)
+                        "EDIT" -> updateMessageState(message.id, "[Message blocked]", false, true)
                     }
                 }
             }
@@ -388,9 +400,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
     private val db = AppDatabase.getDatabase(application)
-    private val nudgeEventDao = db.nudgeEventDao()
+    private val incidentDao = db.incidentDao()
 
-    val nudgeEvents: LiveData<List<NudgeEventEntity>> = nudgeEventDao.getAllEventsFlow().asLiveData()
+    val nudgeEvents: LiveData<List<com.childsafelens.demo.data.model.IncidentEntity>> = incidentDao.getAllIncidentsFlow().asLiveData()
 }
 
 class SimulatorViewModel(application: Application) : AndroidViewModel(application) {
@@ -467,12 +479,34 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
             else if (score > 0.5f) RiskLevel.MODERATE else RiskLevel.SAFE
 
         val isIncoming = (type == "INCOMING")
+        if (!isIncoming) {
+            setClassificationState(
+                message.id,
+                riskLevel,
+                if (result.developmentSimulation) "Development / simulation" else "Backend verified",
+                filteredText,
+                true
+            )
+            IncidentManager.createAndSendIncident(
+                incidentId = incidentId,
+                type = type,
+                message = text,
+                riskScore = score,
+                riskLevel = policy.riskLevel,
+                category = result.category ?: "potential_cyberbullying",
+                packageName = "com.childsafelens.demo",
+                predictionToken = result.predictionToken,
+                status = "ALLOWED"
+            )
+            return
+        }
+
         val hideInitially = policy.requiresParentApproval
         setClassificationState(
             message.id,
             riskLevel,
             if (result.developmentSimulation) "Development / simulation" else "Backend verified",
-            if (hideInitially) "" else text,
+            if (hideInitially) "[Message held for parent review]" else text,
             !hideInitially
         )
 
@@ -490,18 +524,8 @@ class SimulatorViewModel(application: Application) : AndroidViewModel(applicatio
                 viewModelScope.launch(Dispatchers.Main) {
                     when (decision.uppercase()) {
                         "ALLOW", "SHOW" -> updateMessageState(message.id, filteredText, true, false)
-                        "BLOCK", "HIDE" -> updateMessageState(
-                            message.id,
-                            "",
-                            false,
-                            true
-                        )
-                        "EDIT" -> updateMessageState(
-                            message.id,
-                            "Message requires rephrasing",
-                            !isIncoming,
-                            false
-                        )
+                        "BLOCK", "HIDE" -> updateMessageState(message.id, "[Blocked by parent]", false, true)
+                        "EDIT" -> updateMessageState(message.id, "[Message blocked]", false, true)
                     }
                 }
             }

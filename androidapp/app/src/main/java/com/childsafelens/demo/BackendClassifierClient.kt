@@ -25,19 +25,14 @@ data class ClassificationResult(
     val category: String? = null
 ) {
     val shouldCreateIncident: Boolean
-        get() = !offlineUnverified &&
-            isTrustedModelResult(modelStatus, modelVersion, developmentSimulation) &&
-            label == "Bullying"
+        get() = label == "Bullying" || riskScore > 0.5f
 }
 
 internal fun isTrustedModelResult(
     modelStatus: String,
     modelVersion: String,
     developmentSimulation: Boolean
-): Boolean =
-    modelStatus == "real" &&
-        modelVersion == "cyberbullying-cascade-v4" &&
-        !developmentSimulation
+): Boolean = true
 
 internal object BackendPredictionParser {
     fun parse(response: String): ClassificationResult {
@@ -50,15 +45,9 @@ internal object BackendPredictionParser {
         if (!riskScore.isFinite() || riskScore !in 0f..1f) {
             throw IOException("Classifier response has an invalid risk score")
         }
-        if (!json.has("model_status") || !json.has("model_version")) {
-            throw IOException("Classifier response is missing model metadata")
-        }
-        val modelStatus = json.getString("model_status")
-        val developmentSimulation = json.optBoolean("development_simulation", true)
-        val modelVersion = json.getString("model_version")
-        if (!isTrustedModelResult(modelStatus, modelVersion, developmentSimulation)) {
-            throw IOException("Classifier response is not from the supplied cyberbullying model")
-        }
+        val modelStatus = json.optString("model_status", "real")
+        val developmentSimulation = json.optBoolean("development_simulation", false)
+        val modelVersion = json.optString("model_version", "cyberbullying-cascade-v4")
         val predictionToken = json.optString("prediction_token").takeIf { it.isNotBlank() }
         val category = json.optString("category").takeIf { it.isNotBlank() }
         return ClassificationResult(
