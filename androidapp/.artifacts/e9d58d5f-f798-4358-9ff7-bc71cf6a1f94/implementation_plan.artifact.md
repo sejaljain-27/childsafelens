@@ -1,25 +1,33 @@
-# Fix Parent Approval Flow for Outgoing and Incoming Messages
+# Implementation Plan: Message-Level SHAP Dashboard UI Integration
 
-## Problem Statement
-The message interception and parent decision flow needs precise enforcement for both outgoing and incoming messages:
-1. **Outgoing Messages (Child -> Contact):** When classified as bullying (`hideInitially = true`), the message must be held from the receiver (`visibleToReceiver = false`) until the parent approves (`ALLOW`). If blocked (`BLOCK`), the receiver never sees it.
-2. **Incoming Messages (Contact -> Child):** When classified as harmful (`hideInitially = true`), the message must be held from the child (`visibleToReceiver = false`, displaying a holding notice). The child can only see the message if the parent chooses **View / Allow** (`ALLOW`). If the parent chooses **Block** (`BLOCK`), the message remains hidden from the child.
+## Goal
+Add Message-Level SHAP visualization components to the React Native parent dashboard (`mobile-dashboard/my-app`) to enable parents to inspect word-level attributions and contributions for flagged incidents.
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Dashboard UI Requirements:**
+> - Add `MessageExplanation` types and `getMessageExplanation(incidentId)` to `services/alertsService.ts`.
+> - Create `components/MessageExplanationView.tsx` rendering token chips (ordered by index, coloured by sign of gate contribution towards vs away from bullying, intensity by magnitude), "other words" bar from `omitted_contribution`, category contributions when present, model explanation disclaimer, and graceful handling of non-`computed` statuses.
+> - Integrate `MessageExplanationView` into `components/AlertCard.tsx` (or incident detail view).
+> - Do **not** modify `app/reports.tsx`'s risk-fusion SHAP card.
+> - Run `npx tsc --noEmit` and eslint without errors.
 
 ## Proposed Changes
 
-### [Chat / Simulator Component]
+### [Mobile Dashboard]
 
-#### [MODIFY] [ViewModels.kt](file:///C:/Users/Sejal Jain/Downloads/childsafe8/childsafelens/androidapp/app/src/main/java/com/childsafelens/demo/ui/viewmodel/ViewModels.kt)
-- In `ChatViewModel` and `SimulatorViewModel`, update `applyClassificationResult` to correctly distinguish between `isIncoming` and `isOutgoing` when setting initial message visibility (`visibleToReceiver`) and display text (`displayText`).
-  - **Incoming:** If `hideInitially = true`, set `visibleToReceiver = false` and `displayText = "[Message held for parent review]"`. When parent allows, update `visibleToReceiver = true` and `displayText = text`. When blocked, keep `visibleToReceiver = false`.
-  - **Outgoing:** If `hideInitially = true`, set `visibleToReceiver = false` (receiver cannot see it yet). When parent allows, set `visibleToReceiver = true`. When blocked, keep `visibleToReceiver = false`.
+#### [MODIFY] [alertsService.ts](file:///C:/Users/Sejal Jain/Downloads/childsafe8/childsafelens/mobile-dashboard/my-app/services/alertsService.ts)
+- Add TypeScript interfaces for `MessageExplanation`, `TokenContribution`, `ExplanationOutput`.
+- Add `getMessageExplanation(incidentId, parentEmail)` API fetcher helper.
+
+#### [NEW] [MessageExplanationView.tsx](file:///C:/Users/Sejal Jain/Downloads/childsafe8/childsafelens/mobile-dashboard/my-app/components/MessageExplanationView.tsx)
+- React Native component rendering word attribution chips, omitted contributions, category scores, and fallback states.
+
+#### [MODIFY] [AlertCard.tsx](file:///C:/Users/Sejal Jain/Downloads/childsafe8/childsafelens/mobile-dashboard/my-app/components/AlertCard.tsx)
+- Fetch and display `MessageExplanationView` when viewing alert details.
 
 ## Verification Plan
 
 ### Automated Tests
-- Build the Android app (`./gradlew assembleDebug`) to verify compilation.
-
-### Manual Verification
-- Use the Dual Chat Simulator or real chat fragment to test:
-  1. Sending a toxic message as child -> receiver does not see it until parent allows in dashboard.
-  2. Sending a toxic message as contact -> child sees "[Message held for parent review]" until parent clicks View/Allow.
+- Run `npx tsc --noEmit` in `mobile-dashboard/my-app` to ensure zero TypeScript compilation errors.

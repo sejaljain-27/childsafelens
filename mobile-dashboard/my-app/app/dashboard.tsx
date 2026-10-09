@@ -35,6 +35,7 @@ import {
   type ResearchRisk,
   type SocialGraphRisk,
 } from '../services/alertsService';
+import { MessageExplanationView } from '../components/MessageExplanationView';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -733,6 +734,8 @@ const DashboardScreen: React.FC = () => {
                           <Text style={styles.tabContentText}>{item.contribution_percent.toFixed(1)}%</Text>
                         </View>
                       )) || <Text style={styles.tabContentText}>No deterministic contributions available.</Text>}
+
+                      <MessageExplanationView incidentId={selectedIncident.incidentId} parentEmail={parentEmail} />
                     </ScrollView>
                   )}
 

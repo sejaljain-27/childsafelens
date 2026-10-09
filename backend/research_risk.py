@@ -17,6 +17,7 @@ import networkx as nx
 from classifier_service import CASCADE_MODEL_VERSION
 from model import classifier_status
 from risk_fusion import risk_fusion_service
+from message_explainer import message_explainer_service
 
 SEVERITY_CATEGORIES = frozenset(
     {"insult", "harassment", "humiliation", "threat", "blackmail", "physical_harm"}
@@ -1197,6 +1198,7 @@ def capability_status() -> dict[str, Any]:
             "weights": _research_weights("fusion", FUSION_RESEARCH_WEIGHTS),
         },
         "explainability": risk_fusion_service.explainability_status(),
+        "message_explainability": message_explainer_service.status(),
         "multimodal": {
             "audio": {
                 "provider": "Sarvam",

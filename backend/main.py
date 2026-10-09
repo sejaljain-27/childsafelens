@@ -35,6 +35,7 @@ from model import predict_text
 from classifier_service import CASCADE_MODEL_VERSION, ModelUnavailableError
 from account_store import account_store
 from notification_service import notification_service, NotificationPreferences
+from message_explainer import message_explainer_service
 from research_risk import (
     INCIDENT_SCORE_COMPONENTS,
     SOCIAL_GRAPH_FEATURES,
@@ -803,6 +804,20 @@ def create_incident(
             "modality": "contextual_risk",
             "modelVersion": None,
         },
+        "messageExplanation": (
+            message_explainer_service.explain_for_incident(
+                classification_text,
+                prediction,
+                inc.messageSnippet,
+            )
+            if hasattr(message_explainer_service, "explain_for_incident")
+            else {
+                "status": "unavailable",
+                "reason": "error",
+                "message": "Explanation unavailable",
+                "method": "KernelSHAP",
+            }
+        ),
         "modelVersion": prediction.get("model_version"),
         "modelVersions": {"classifier": prediction.get("model_version")},
         "messageAnalysis": {
@@ -1266,6 +1281,28 @@ def get_incident_explanation(
         "model_output": explanation.get("model_output"),
         "message": explanation["message"],
         "parent_action": incident["parentDecision"],
+    }
+
+
+@app.get("/incidents/{incident_id}/message-explanation")
+def get_incident_message_explanation(
+    incident_id: str,
+    parentEmail: str | None = None,
+    authenticated_email: str = Depends(require_parent),
+):
+    owner_email = _assert_parent_scope(parentEmail, authenticated_email)
+    incident = _require_incident_owner(incident_id, owner_email)
+    stored = incident.get("messageExplanation")
+    if not isinstance(stored, dict):
+        stored = {
+            "status": "unavailable",
+            "reason": "not_recorded",
+            "message": "Explanation unavailable",
+            "method": "KernelSHAP",
+        }
+    return {
+        "incident_id": incident_id,
+        **stored,
     }
 
 

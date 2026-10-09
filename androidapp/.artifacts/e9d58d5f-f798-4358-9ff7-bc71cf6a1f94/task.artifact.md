@@ -1,7 +1,6 @@
-# Tasks - Fix Parent Dashboard Alerts
+# Tasks - Message-Level SHAP Dashboard UI Integration
 
-- `[x]` Update `DashboardViewModel` to observe `IncidentDao` instead of `NudgeEventDao`
-- `[x]` Update `DashboardAdapter` to handle `IncidentEntity` objects
-- `[x]` Add robust session fallbacks in `IncidentManager`
-- `[x]` Relax model trust checks in `BackendClassifierClient` and `BackendPredictionParser` to prevent dropping simulation/development classification responses
-- `[x]` Build app and verify successful compilation
+- `[x]` Update `mobile-dashboard/my-app/services/alertsService.ts` with explanation types and `getMessageExplanation`
+- `[x]` Create `mobile-dashboard/my-app/components/MessageExplanationView.tsx`
+- `[x]` Integrate `MessageExplanationView` into the Incident Details Modal (`dashboard.tsx` under the "Full Analysis" tab)
+- `[x]` Run `npx tsc --noEmit` and verify zero errors in new SHAP components

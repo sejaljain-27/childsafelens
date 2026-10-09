@@ -832,3 +832,85 @@ export const submitParentDecision = async (incidentId: string, decision: "ALLOW"
     throw error;
   }
 };
+
+export interface TokenContribution {
+  index: number;
+  token: string;
+  gate: number;
+  category?: number;
+}
+
+export interface ExplanationOutput {
+  output: string;
+  name?: string;
+  base_value: number;
+  model_output: number;
+  omitted_contribution: number;
+  additivity_verified: boolean;
+}
+
+export interface MessageExplanation {
+  incident_id: string;
+  status: string;
+  reason: string | null;
+  message: string;
+  method: string;
+  exact: boolean;
+  masking: string;
+  model_version: string;
+  shap_version: string;
+  computed_at: string;
+  n_tokens: number;
+  n_evaluations: number;
+  tokens: TokenContribution[];
+  gate: ExplanationOutput;
+  category?: ExplanationOutput | null;
+}
+
+export const getMessageExplanation = async (
+  incidentId: string,
+  parentEmail?: string,
+): Promise<MessageExplanation> => {
+  const params = new URLSearchParams();
+  if (parentEmail) params.set('parentEmail', parentEmail);
+  const query = params.toString() ? `?${params.toString()}` : '';
+  try {
+    const response = await authenticatedFetch(`${API_BASE_URL}/incidents/${incidentId}/message-explanation${query}`);
+    if (!response.ok) {
+      return {
+        incident_id: incidentId,
+        status: 'unavailable',
+        reason: 'error',
+        message: 'Explanation unavailable',
+        method: 'KernelSHAP',
+        exact: false,
+        masking: '',
+        model_version: '',
+        shap_version: '',
+        computed_at: '',
+        n_tokens: 0,
+        n_evaluations: 0,
+        tokens: [],
+        gate: { output: 'p_bullying', base_value: 0, model_output: 0, omitted_contribution: 0, additivity_verified: false },
+      };
+    }
+    return await response.json() as MessageExplanation;
+  } catch (error) {
+    return {
+      incident_id: incidentId,
+      status: 'unavailable',
+      reason: 'network_error',
+      message: 'Explanation unavailable',
+      method: 'KernelSHAP',
+      exact: false,
+      masking: '',
+      model_version: '',
+      shap_version: '',
+      computed_at: '',
+      n_tokens: 0,
+      n_evaluations: 0,
+      tokens: [],
+      gate: { output: 'p_bullying', base_value: 0, model_output: 0, omitted_contribution: 0, additivity_verified: false },
+    };
+  }
+};

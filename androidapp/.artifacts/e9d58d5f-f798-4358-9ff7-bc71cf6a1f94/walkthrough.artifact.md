@@ -1,11 +1,15 @@
-# Walkthrough - Comprehensive Fix for Parent Dashboard Alerts
+# Walkthrough - Message-Level SHAP Dashboard UI Modal Integration
 
-## Root Cause Discovered
-1. **Model Trust Check Rejection:** `BackendPredictionParser` enforced strict checks (`modelStatus == "real"` and `!developmentSimulation`) which caused simulation responses from local FastAPI backend testing to throw an `IOException`.
-2. **Offline Fallback:** When the exception was caught, the app fell back to `offlineUnverified = true`, where `shouldCreateIncident` evaluated to `false`.
-3. **Dropped Incidents:** As a result, incident creation was silently skipped entirely, and the Parent Dashboard received zero items.
+## Summary of Changes
+1. **API Service (`alertsService.ts`):** Added `TokenContribution`, `ExplanationOutput`, `MessageExplanation`, and `getMessageExplanation(incidentId, parentEmail)`.
+2. **Explanation View (`MessageExplanationView.tsx`):**
+   - Renders interactive word attribution chips ordered by token index.
+   - Color-codes chips by sign (red/pink for pushing towards bullying, blue/green for pushing away) with intensity proportional to magnitude.
+   - Shows omitted word contributions (`omitted_contribution`) and model explanation disclaimer.
+3. **Incident Details Modal (`dashboard.tsx`):**
+   - Integrated `<MessageExplanationView incidentId={selectedIncident.incidentId} parentEmail={parentEmail} />` directly into the **Full Analysis** tab of the incident inspection modal (where parents view detailed risk and classifier breakdown).
 
-## Solutions Applied
-- **Relaxed Trust Verification:** Updated `isTrustedModelResult` to accept local/simulation test responses without throwing exceptions.
-- **Ensured Incident Creation:** Updated `shouldCreateIncident` to successfully trigger whenever `label == "Bullying"` or `riskScore > 0.5f`.
-- **Database Persistence:** Connected `DashboardViewModel` directly to `IncidentDao` with session fallbacks to guarantee that every alert is saved and shown instantly on the Parent Dashboard.
+## How to View in the UI
+1. Ensure your backend is running with `$env:CHILDSAFELENS_MESSAGE_SHAP_ENABLED="true"`.
+2. In the mobile dashboard (`mobile-dashboard/my-app`), open any flagged incident to open the **Message Incident Details** modal.
+3. Click on the **Full Analysis** tab — you will now see the complete **Model Explanation (Message SHAP)** word-level attribution chips displayed right below Classifier & Risk Fusion Analysis!

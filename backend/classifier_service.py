@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+import numpy as np
+
 
 ClassificationLabel = Literal["Bullying", "Clean"]
 CASCADE_MODEL_VERSION = "cyberbullying-cascade-v4"
@@ -58,6 +60,17 @@ class UnavailableCascadeClassifier:
             "categories": [],
         }
 
+    @property
+    def encoder(self):
+        return None
+
+    @property
+    def category_names(self):
+        return ()
+
+    def predict_arrays(self, word_ids, char_ids, batch_size=128):
+        raise ModelUnavailableError("Model unavailable")
+
 
 class CascadeCyberbullyingClassifier:
     """Adapter for the supplied cascade's gate and category predictions."""
@@ -86,6 +99,22 @@ class CascadeCyberbullyingClassifier:
         self.categories = tuple(self._predictor.categories)
         self.gate_threshold = float(self._predictor.gate_threshold)
         self.category_threshold = float(self._predictor.cat_threshold)
+
+    @property
+    def encoder(self):
+        return self._predictor.enc
+
+    @property
+    def category_names(self):
+        return self.categories
+
+    def predict_arrays(self, word_ids: np.ndarray, char_ids: np.ndarray, batch_size: int = 128) -> tuple[np.ndarray, np.ndarray]:
+        g, c = self._predictor.model.predict(
+            [word_ids.astype(np.int32), char_ids.astype(np.int32)],
+            batch_size=batch_size,
+            verbose=0,
+        )
+        return g[:, 0], c
 
     def classify(self, text: str) -> ClassificationResult:
         prediction = self._predictor.predict(text)

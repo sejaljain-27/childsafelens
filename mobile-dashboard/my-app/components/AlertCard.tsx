@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import type { IncidentType } from '../services/alertsService';
+import { MessageExplanationView } from './MessageExplanationView';
 
 interface AlertCardProps {
   alert: IncidentType;
@@ -32,6 +33,8 @@ const AlertCard: React.FC<AlertCardProps> = ({ alert, onDecision }) => {
         {'"'}{alert.messageSnippet}{'"'}
       </Text>
       <Text style={styles.status}>Status: {alert.status} {alert.parentDecision ? `(Parent: ${alert.parentDecision})` : ''}</Text>
+
+      <MessageExplanationView incidentId={alert.incidentId} parentEmail={alert.parentEmail} />
 
       {isPending && isIncoming && (
         <View style={styles.actions}>
@@ -129,6 +132,7 @@ const styles = StyleSheet.create({
     gap: 12,
     justifyContent: 'flex-end',
     flexWrap: 'wrap',
+    marginTop: 12,
   },
   btn: {
     paddingHorizontal: 18,
@@ -145,18 +149,13 @@ const styles = StyleSheet.create({
   allowBtn: {
     backgroundColor: 'rgba(76, 175, 80, 0.9)',
   },
-  editBtn: {
-    backgroundColor: 'rgba(255, 152, 0, 0.9)',
-  },
   blockBtn: {
-    backgroundColor: 'rgba(233, 30, 99, 0.9)',
+    backgroundColor: 'rgba(239, 68, 68, 0.9)',
   },
   btnText: {
-    color: '#FFFFFF',
-    fontWeight: '800',
-    fontSize: 13,
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 14,
   },
 });
 
